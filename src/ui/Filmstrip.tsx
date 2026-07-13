@@ -16,6 +16,7 @@ export function Filmstrip() {
   const photos = useStore((s) => s.photos)
   const sources = useStore((s) => s.sources)
   const selectedIds = useStore((s) => s.selectedIds)
+  const activePhotoId = useStore((s) => s.activePhotoId)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const [viewWidth, setViewWidth] = useState(1200)
@@ -38,6 +39,19 @@ export function Filmstrip() {
     }
     return list.sort((a, b) => timeOf(a) - timeOf(b) || a.id.localeCompare(b.id))
   }, [photos, sources])
+
+  // Scroll the active photo into view (e.g. after a timeline click).
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !activePhotoId) return
+    const idx = ordered.findIndex((p) => p.id === activePhotoId)
+    if (idx < 0) return
+    const left = idx * ITEM_W
+    if (left < el.scrollLeft + ITEM_W || left > el.scrollLeft + el.clientWidth - ITEM_W * 2) {
+      el.scrollTo({ left: left - el.clientWidth / 2 + ITEM_W / 2, behavior: 'smooth' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePhotoId])
 
   const first = Math.max(0, Math.floor(scrollLeft / ITEM_W) - 4)
   const count = Math.ceil(viewWidth / ITEM_W) + 8

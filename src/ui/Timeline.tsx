@@ -11,9 +11,13 @@ interface TimedPhoto {
   selected: boolean
 }
 
-const HEIGHT = 64
+const HEIGHT = 72
+const DRAFT_LANE_Y = 2
+const DRAFT_LANE_H = 10
+const TRACK_LANE_Y = 15
 const TRACK_LANE_H = 8
-const TICK_TOP = 26
+const TICK_TOP = 36
+const MIN_SPAN_MS = 5_000
 
 export function Timeline() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -22,9 +26,12 @@ export function Timeline() {
   const tracks = useStore((s) => s.tracks)
   const selectedIds = useStore((s) => s.selectedIds)
   const cursorMs = useStore((s) => s.timelineCursorMs)
+  const draft = useStore((s) => s.draft)
   const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
   const [hoverX, setHoverX] = useState<number | null>(null)
   const [width, setWidth] = useState(800)
+  // Zoomed/panned view window; null = fit all data.
+  const [view, setView] = useState<{ min: number; max: number } | null>(null)
 
   const timed: TimedPhoto[] = useMemo(() => {
     const out: TimedPhoto[] = []
@@ -39,7 +46,7 @@ export function Timeline() {
     return out
   }, [photos, sources, selectedIds])
 
-  const domain = useMemo(() => {
+  const dataDomain = useMemo(() => {
     let min = Infinity
     let max = -Infinity
     for (const p of timed) {
@@ -50,10 +57,16 @@ export function Timeline() {
       min = Math.min(min, t.startMs)
       max = Math.max(max, t.endMs)
     }
+    if (draft && draft.points.length > 0) {
+      min = Math.min(min, draft.points[0].t)
+      max = Math.max(max, draft.points[draft.points.length - 1].t)
+    }
     if (!Number.isFinite(min)) return null
     const pad = Math.max(60_000, (max - min) * 0.02)
     return { min: min - pad, max: max + pad }
-  }, [timed, tracks])
+  }, [timed, tracks, draft])
+
+  const domain = view ?? dataDomain
 
   useEffect(() => {
     const el = canvasRef.current?.parentElement
@@ -67,6 +80,52 @@ export function Timeline() {
   const xOf = (t: number) => (domain ? ((t - domain.min) / (domain.max - domain.min)) * width : 0)
   const tOf = (x: number) => (domain ? domain.min + (x / width) * (domain.max - domain.min) : 0)
 
+  const draftRange = useMemo(() => {
+    if (!draft || draft.points.length === 0) return null
+    return { start: draft.points[0].t, end: draft.points[draft.points.length - 1].t }
+  }, [draft])
+
+  const zoomAround = (anchorT: number, factor: number) => {
+    const d = domain
+    if (!d) return
+    const span = Math.max(MIN_SPAN_MS, (d.max - d.min) * factor)
+    let min = anchorT - (anchorT - d.min) * (span / (d.max - d.min))
+    let max = min + span
+    // When zoomed out beyond the data, snap back to fit.
+    if (dataDomain && min <= dataDomain.min && max >= dataDomain.max) {
+      setView(null)
+      return
+    }
+    setView({ min, max })
+  }
+
+  const panBy = (deltaMs: number) => {
+    const d = domain
+    if (!d) return
+    setView({ min: d.min + deltaMs, max: d.max + deltaMs })
+  }
+
+  // Wheel zoom/pan needs a non-passive listener to preventDefault.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = canvas.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        const d = domain
+        if (d) panBy(((d.max - d.min) / width) * e.deltaX)
+      } else {
+        zoomAround(tOf(x), Math.exp(e.deltaY * 0.002))
+      }
+    }
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domain, width, dataDomain])
+
+  // ---- drawing ----
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -84,6 +143,21 @@ export function Timeline() {
       return
     }
 
+    // Draft bar (draggable to shift all point times).
+    if (draftRange) {
+      const x0 = xOf(draftRange.start)
+      const x1 = xOf(draftRange.end)
+      ctx.fillStyle = 'rgba(255, 213, 79, 0.35)'
+      ctx.fillRect(x0, DRAFT_LANE_Y, Math.max(4, x1 - x0), DRAFT_LANE_H)
+      ctx.strokeStyle = '#ffd54f'
+      ctx.setLineDash([4, 3])
+      ctx.strokeRect(x0 + 0.5, DRAFT_LANE_Y + 0.5, Math.max(4, x1 - x0) - 1, DRAFT_LANE_H - 1)
+      ctx.setLineDash([])
+      ctx.fillStyle = '#ffd54f'
+      ctx.font = '9px system-ui'
+      ctx.fillText('⇔ drag to shift track time', Math.max(2, x0), DRAFT_LANE_Y + DRAFT_LANE_H + 8)
+    }
+
     // Track coverage bars.
     let lane = 0
     for (const track of Object.values(tracks)) {
@@ -92,7 +166,7 @@ export function Timeline() {
         const x1 = xOf(track.points[seg.endIdx].t)
         ctx.fillStyle = track.color
         ctx.globalAlpha = 0.85
-        ctx.fillRect(x0, 6 + (lane % 2) * (TRACK_LANE_H + 2), Math.max(2, x1 - x0), TRACK_LANE_H)
+        ctx.fillRect(x0, TRACK_LANE_Y + (lane % 2) * (TRACK_LANE_H + 2), Math.max(2, x1 - x0), TRACK_LANE_H)
       }
       lane++
     }
@@ -101,6 +175,7 @@ export function Timeline() {
     // Photo ticks.
     for (const p of timed) {
       const x = xOf(p.t)
+      if (x < -2 || x > width + 2) continue
       ctx.fillStyle = p.color
       ctx.fillRect(x - 1, TICK_TOP, 2, p.selected ? 26 : 18)
       if (p.selected) {
@@ -119,7 +194,7 @@ export function Timeline() {
       ctx.strokeRect(x0 + 0.5, 0.5, x1 - x0 - 1, HEIGHT - 1)
     }
 
-    // Time cursor (used as the default start for new manual tracks).
+    // Time cursor (also the default start for new manual tracks).
     if (cursorMs !== undefined && cursorMs >= domain.min && cursorMs <= domain.max) {
       const cx = xOf(cursorMs)
       ctx.strokeStyle = '#ffd54f'
@@ -146,14 +221,58 @@ export function Timeline() {
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timed, tracks, domain, width, brush, hoverX, cursorMs])
+  }, [timed, tracks, domain, width, brush, hoverX, cursorMs, draftRange])
 
+  const isOnDraftBar = (x: number, y: number) =>
+    draftRange !== null &&
+    y <= DRAFT_LANE_Y + DRAFT_LANE_H + 4 &&
+    x >= xOf(draftRange.start) - 6 &&
+    x <= xOf(draftRange.end) + 6
+
+  /** Click: set cursor, fly the map, focus the nearest photo. */
+  const handleClick = (x: number) => {
+    const state = useStore.getState()
+    const t = tOf(x)
+    state.setTimelineCursor(t)
+    const point = positionAtTime(Object.values(state.tracks), Object.values(state.photos), state.sources, t)
+    if (point) state.flyTo(point)
+    // Focus the photo nearest in time (filmstrip scrolls to it).
+    let best: TimedPhoto | undefined
+    for (const p of timed) {
+      if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p
+    }
+    if (best) {
+      state.setSelection([best.id])
+      state.setActivePhoto(best.id)
+    }
+  }
+
+  const msPerPx = domain ? (domain.max - domain.min) / width : 0
+
+  // ---- mouse interactions: draft-shift drag, brush, click ----
   const onMouseDown = (e: React.MouseEvent) => {
     if (!domain) return
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
-    setBrush({ x0: x, x1: x })
+    const y = e.clientY - rect.top
 
+    if (isOnDraftBar(x, y)) {
+      let lastX = x
+      const onMove = (ev: MouseEvent) => {
+        const mx = ev.clientX - rect.left
+        useStore.getState().shiftDraftTimes((mx - lastX) * msPerPx)
+        lastX = mx
+      }
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+      return
+    }
+
+    setBrush({ x0: x, x1: x })
     const onMove = (ev: MouseEvent) => {
       const mx = ev.clientX - rect.left
       setBrush((b) => (b ? { ...b, x1: mx } : b))
@@ -162,22 +281,13 @@ export function Timeline() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       const mx = ev.clientX - rect.left
-      const t0 = tOf(Math.min(x, mx))
-      const t1 = tOf(Math.max(x, mx))
       setBrush(null)
       if (Math.abs(mx - x) < 4) {
-        // Click: set the time cursor and jump to the nearest coordinate.
-        const state = useStore.getState()
-        state.setTimelineCursor(tOf(x))
-        const point = positionAtTime(
-          Object.values(state.tracks),
-          Object.values(state.photos),
-          state.sources,
-          tOf(x)
-        )
-        if (point) state.flyTo(point)
+        handleClick(x)
         return
       }
+      const t0 = tOf(Math.min(x, mx))
+      const t1 = tOf(Math.max(x, mx))
       const ids = timed.filter((p) => p.t >= t0 && p.t <= t1).map((p) => p.id)
       useStore.getState().setSelection(ids)
     }
@@ -185,19 +295,90 @@ export function Timeline() {
     window.addEventListener('mouseup', onUp)
   }
 
+  // ---- touch interactions: pinch zoom, pan, draft-shift, tap ----
+  const touchState = useRef<{
+    mode: 'pan' | 'pinch' | 'draft'
+    lastX: number
+    startX: number
+    moved: boolean
+    pinchDist?: number
+  } | null>(null)
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (!domain) return
+    const rect = canvasRef.current!.getBoundingClientRect()
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      touchState.current = { mode: 'pinch', lastX: 0, startX: 0, moved: true, pinchDist: Math.abs(dx) }
+      return
+    }
+    const x = e.touches[0].clientX - rect.left
+    const y = e.touches[0].clientY - rect.top
+    touchState.current = {
+      mode: isOnDraftBar(x, y) ? 'draft' : 'pan',
+      lastX: x,
+      startX: x,
+      moved: false,
+    }
+  }
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    const st = touchState.current
+    if (!st || !domain) return
+    const rect = canvasRef.current!.getBoundingClientRect()
+    if (st.mode === 'pinch' && e.touches.length === 2) {
+      const dist = Math.abs(e.touches[0].clientX - e.touches[1].clientX)
+      if (st.pinchDist && dist > 10) {
+        const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left
+        zoomAround(tOf(centerX), st.pinchDist / dist)
+        st.pinchDist = dist
+      }
+      return
+    }
+    if (e.touches.length !== 1) return
+    const x = e.touches[0].clientX - rect.left
+    const dx = x - st.lastX
+    if (Math.abs(x - st.startX) > 6) st.moved = true
+    if (st.mode === 'draft') {
+      useStore.getState().shiftDraftTimes(dx * msPerPx)
+    } else if (st.moved) {
+      panBy(-dx * msPerPx)
+    }
+    st.lastX = x
+  }
+
+  const onTouchEnd = () => {
+    const st = touchState.current
+    touchState.current = null
+    if (st && st.mode === 'pan' && !st.moved) handleClick(st.startX)
+  }
+
   return (
     <div className="timeline">
       <canvas
         ref={canvasRef}
-        style={{ width: '100%', height: HEIGHT }}
+        style={{ width: '100%', height: HEIGHT, touchAction: 'none' }}
         onMouseDown={onMouseDown}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
         onMouseMove={(e) => {
           const rect = canvasRef.current!.getBoundingClientRect()
           setHoverX(e.clientX - rect.left)
         }}
         onMouseLeave={() => setHoverX(null)}
-        title={hoverX !== null && domain ? formatUtc(tOf(hoverX)) : 'Drag to select photos by time range'}
+        onDoubleClick={() => setView(null)}
+        title={
+          hoverX !== null && domain
+            ? `${formatUtc(tOf(hoverX))} — wheel: zoom, drag: select, double-click: fit`
+            : 'Drag to select photos by time range; wheel to zoom'
+        }
       />
+      {view && (
+        <button className="timeline-fit" title="Reset zoom to fit all data" onClick={() => setView(null)}>
+          ⤢ fit
+        </button>
+      )}
     </div>
   )
 }

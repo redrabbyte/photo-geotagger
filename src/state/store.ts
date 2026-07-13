@@ -107,6 +107,9 @@ export interface AppState {
   deleteDraftPointAt(index: number): void
   setDraftName(name: string): void
   selectDraftPoint(index?: number): void
+  /** Shift every draft point's time by the same delta (drag in the timeline). */
+  shiftDraftTimes(deltaMs: number): void
+  copyTrack(trackId: string): void
   cancelDraft(): void
   /** Returns an error message, or undefined on success. */
   commitDraft(): string | undefined
@@ -421,6 +424,32 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectDraftPoint(draftSelectedIndex) {
     set({ draftSelectedIndex })
+  },
+
+  shiftDraftTimes(deltaMs) {
+    set((s) => {
+      if (!s.draft || deltaMs === 0) return s
+      const points = s.draft.points.map((p) => ({ ...p, t: p.t + deltaMs }))
+      return { draft: { ...s.draft, points } }
+    })
+  },
+
+  copyTrack(trackId) {
+    const s = get()
+    const track = s.tracks[trackId]
+    if (!track) return
+    const id = nextTrackId()
+    const color = TRACK_COLORS[Object.keys(s.tracks).length % TRACK_COLORS.length]
+    const copy = {
+      ...track,
+      id,
+      color,
+      name: `${track.name} (copy)`,
+      fileName: `${track.name} (copy).gpx`,
+      points: track.points.map((p) => ({ ...p })),
+      segments: track.segments.map((seg) => ({ ...seg })),
+    }
+    set({ tracks: { ...s.tracks, [id]: copy } })
   },
 
   cancelDraft() {

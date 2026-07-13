@@ -306,14 +306,24 @@ h4 {
 
 /* ---- timeline ---- */
 .timeline {
-  height: 64px;
+  height: 72px;
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
+  position: relative;
 }
 
 .timeline canvas {
   display: block;
   cursor: crosshair;
+}
+
+.timeline-fit {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  opacity: 0.85;
 }
 
 /* ---- filmstrip ---- */

@@ -191,6 +191,13 @@ export function SourcesPanel() {
           <span className="muted small">{t.points.length} pts</span>
           <button
             className="remove"
+            title="Duplicate this track (e.g. to shift a copy in time while keeping the original)"
+            onClick={() => useStore.getState().copyTrack(t.id)}
+          >
+            ⧉
+          </button>
+          <button
+            className="remove"
             title="Edit this track on the map (move points, insert points, adjust times, export as GPX)"
             onClick={() => {
               useStore.getState().startEditTrack(t.id)
