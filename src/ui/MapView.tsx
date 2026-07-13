@@ -268,6 +268,18 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Fly-to commands from other components (track list, timeline).
+  const mapTarget = useStore((s) => s.mapTarget)
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady || !mapTarget) return
+    map.flyTo({
+      center: [mapTarget.point.lon, mapTarget.point.lat],
+      zoom: Math.max(map.getZoom(), mapTarget.zoom ?? 13),
+      duration: 700,
+    })
+  }, [mapTarget, mapReady])
+
   // Track layer updates.
   useEffect(() => {
     const map = mapRef.current

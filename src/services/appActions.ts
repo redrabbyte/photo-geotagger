@@ -2,7 +2,13 @@ import type { Photo, Source, Track } from '../domain/types'
 import { isDirty } from '../domain/types'
 import { parseGpx, GpxParseError } from '../domain/parseGpx'
 import { enumerateFolder, fsaSupported } from './fs/sources'
-import { ensurePermission, loadPersistedSources, persistSources } from './fs/handleStore'
+import {
+  ensurePermission,
+  loadPersistedGpx,
+  loadPersistedSources,
+  persistSources,
+  rememberGpxHandles,
+} from './fs/handleStore'
 import { ScanClient } from './scanClient'
 import { writeBatch } from './writePipeline'
 import { useStore, nextSourceId, nextTrackId, makePhotoRecord, SOURCE_COLORS, type ScanUpdate } from '../state/store'
@@ -185,16 +191,48 @@ export async function addGpxFlow(): Promise<void> {
   } catch {
     return // cancelled
   }
+  const loaded: FileSystemFileHandle[] = []
   for (const handle of handles) {
     try {
       const file = await handle.getFile()
       const tracks: Track[] = parseGpx(await file.text(), file.name, () => nextTrackId())
       store.addTracks(tracks)
+      loaded.push(handle)
       store.notify('success', `Loaded ${file.name}: ${tracks.reduce((n, t) => n + t.points.length, 0)} points`)
     } catch (err) {
       store.notify('error', err instanceof GpxParseError ? err.message : `Failed to parse ${handle.name}`)
     }
   }
+  if (loaded.length > 0) await rememberGpxHandles(loaded)
+}
+
+export interface RestorableGpx {
+  name: string
+  restore: () => Promise<void>
+}
+
+/** GPX files picked in earlier sessions; each restores on click (user gesture). */
+export async function listRestorableGpx(): Promise<RestorableGpx[]> {
+  if (!fsaSupported()) return []
+  const persisted = await loadPersistedGpx()
+  return persisted.map((p) => ({
+    name: p.name,
+    restore: async () => {
+      const store = useStore.getState()
+      if (!(await ensurePermission(p.fileHandle, 'read'))) {
+        store.notify('error', `Permission denied for "${p.name}" — pick the file again instead.`)
+        return
+      }
+      try {
+        const file = await p.fileHandle.getFile()
+        const tracks = parseGpx(await file.text(), file.name, () => nextTrackId())
+        store.addTracks(tracks)
+        store.notify('success', `Restored ${file.name}`)
+      } catch (err) {
+        store.notify('error', err instanceof GpxParseError ? err.message : `Failed to restore ${p.name}`)
+      }
+    },
+  }))
 }
 
 /** Write all dirty photos (or the given subset) using current settings. */

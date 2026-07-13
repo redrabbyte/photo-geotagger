@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { isStale } from '../domain/matching'
 import { useStore } from '../state/store'
-import { addGpxFlow, addSourceFlow, listRestorableSources, type RestorableSource } from '../services/appActions'
+import {
+  addGpxFlow,
+  addSourceFlow,
+  listRestorableGpx,
+  listRestorableSources,
+  type RestorableGpx,
+  type RestorableSource,
+} from '../services/appActions'
 import { formatOffset, parseOffset } from './format'
 
 function OffsetEditor({ sourceId, value }: { sourceId: string; value: number }) {
@@ -40,9 +47,11 @@ export function SourcesPanel() {
   const tracks = useStore((s) => s.tracks)
   const scanning = useStore((s) => s.scanning)
   const [restorable, setRestorable] = useState<RestorableSource[]>([])
+  const [restorableGpx, setRestorableGpx] = useState<RestorableGpx[]>([])
 
   useEffect(() => {
     listRestorableSources().then(setRestorable).catch(() => setRestorable([]))
+    listRestorableGpx().then(setRestorableGpx).catch(() => setRestorableGpx([]))
   }, [])
 
   const counts = useMemo(() => {
@@ -60,6 +69,7 @@ export function SourcesPanel() {
   const sourceList = Object.values(sources)
   const trackList = Object.values(tracks)
   const shownRestorable = restorable.filter((r) => !sourceList.some((s) => s.name === r.name))
+  const shownRestorableGpx = restorableGpx.filter((g) => !trackList.some((t) => t.fileName === g.name))
 
   const reassignStale = (sourceId: string) => {
     const store = useStore.getState()
@@ -136,12 +146,17 @@ export function SourcesPanel() {
         )
       })}
 
-      {shownRestorable.length > 0 && (
+      {(shownRestorable.length > 0 || shownRestorableGpx.length > 0) && (
         <div className="restore-block">
           <h4>Previous session</h4>
           {shownRestorable.map((r, i) => (
-            <button key={i} onClick={() => void r.restore().then(() => listRestorableSources().then(setRestorable))}>
+            <button key={`s${i}`} onClick={() => void r.restore()}>
               ↻ {r.name}
+            </button>
+          ))}
+          {shownRestorableGpx.map((g, i) => (
+            <button key={`g${i}`} onClick={() => void g.restore()}>
+              ↻ {g.name} <span className="muted small">(GPX)</span>
             </button>
           ))}
         </div>
@@ -155,7 +170,13 @@ export function SourcesPanel() {
       {trackList.map((t) => (
         <div className="track-item" key={t.id}>
           <span className="color-chip" style={{ background: t.color }} />
-          <span className="track-name" title={`${t.fileName} — ${t.points.length} points`}>{t.name}</span>
+          <span
+            className="track-name clickable"
+            title={`${t.fileName} — ${t.points.length} points. Click to jump to the track start on the map.`}
+            onClick={() => useStore.getState().flyTo({ lat: t.points[0].lat, lon: t.points[0].lon }, 13)}
+          >
+            {t.name}
+          </span>
           <span className="muted small">{t.points.length} pts</span>
           <button className="remove" onClick={() => useStore.getState().removeTrack(t.id)}>×</button>
         </div>

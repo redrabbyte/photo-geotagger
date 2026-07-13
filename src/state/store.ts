@@ -53,6 +53,8 @@ export interface AppState {
   notices: Notice[]
   /** Manual drags snap to the nearest track when enabled. */
   snapToTrack: boolean
+  /** One-shot command for the map to fly somewhere; seq forces re-trigger. */
+  mapTarget?: { point: GeoPoint; zoom?: number; seq: number }
   /** Active clock calibration: next map click sets the source's offset. */
   calibrate?: { sourceId: SourceId; photoBaseUtcMs: number; photoName: string }
 
@@ -74,6 +76,7 @@ export interface AppState {
   setWriteProgress(progress?: { done: number; total: number; current: string }): void
   setSettings(patch: Partial<AppSettings>): void
   setSnapToTrack(snap: boolean): void
+  flyTo(point: GeoPoint, zoom?: number): void
   startCalibrate(sourceId: SourceId, photoBaseUtcMs: number, photoName: string): void
   cancelCalibrate(): void
   notify(kind: Notice['kind'], text: string): void
@@ -303,6 +306,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   setSnapToTrack(snapToTrack) {
     set({ snapToTrack })
+  },
+
+  flyTo(point, zoom) {
+    set((s) => ({ mapTarget: { point, zoom, seq: (s.mapTarget?.seq ?? 0) + 1 } }))
   },
 
   startCalibrate(sourceId, photoBaseUtcMs, photoName) {

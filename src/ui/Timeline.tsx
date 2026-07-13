@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { effectiveUtcMs } from '../domain/types'
+import { positionAtTime } from '../domain/positionAtTime'
 import { useStore } from '../state/store'
 import { formatUtc } from './format'
 
@@ -144,7 +145,18 @@ export function Timeline() {
       const t0 = tOf(Math.min(x, mx))
       const t1 = tOf(Math.max(x, mx))
       setBrush(null)
-      if (Math.abs(mx - x) < 4) return // treat as click, not brush
+      if (Math.abs(mx - x) < 4) {
+        // Click: jump the map to the coordinate closest to this moment.
+        const state = useStore.getState()
+        const point = positionAtTime(
+          Object.values(state.tracks),
+          Object.values(state.photos),
+          state.sources,
+          tOf(x)
+        )
+        if (point) state.flyTo(point)
+        return
+      }
       const ids = timed.filter((p) => p.t >= t0 && p.t <= t1).map((p) => p.id)
       useStore.getState().setSelection(ids)
     }

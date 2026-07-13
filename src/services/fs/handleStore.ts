@@ -40,9 +40,36 @@ export async function clearPersistedSources(): Promise<void> {
   }
 }
 
+export interface PersistedGpx {
+  name: string
+  fileHandle: FileSystemFileHandle
+}
+
+const GPX_KEY = 'photo-geotagger.gpx.v1'
+
+export async function loadPersistedGpx(): Promise<PersistedGpx[]> {
+  try {
+    return ((await get(GPX_KEY)) as PersistedGpx[] | undefined) ?? []
+  } catch {
+    return []
+  }
+}
+
+/** Remember explicitly-picked GPX files (folder-discovered ones restore with their source). */
+export async function rememberGpxHandles(handles: FileSystemFileHandle[]): Promise<void> {
+  try {
+    const existing = await loadPersistedGpx()
+    const byName = new Map(existing.map((g) => [g.name, g]))
+    for (const h of handles) byName.set(h.name, { name: h.name, fileHandle: h })
+    await set(GPX_KEY, [...byName.values()])
+  } catch {
+    // persistence is best-effort
+  }
+}
+
 /** (Re-)request permission for a handle. Needs a user gesture. */
 export async function ensurePermission(
-  handle: FileSystemDirectoryHandle,
+  handle: FileSystemHandle,
   mode: 'read' | 'readwrite' = 'read'
 ): Promise<boolean> {
   try {
