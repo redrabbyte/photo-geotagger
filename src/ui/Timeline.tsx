@@ -21,6 +21,7 @@ export function Timeline() {
   const sources = useStore((s) => s.sources)
   const tracks = useStore((s) => s.tracks)
   const selectedIds = useStore((s) => s.selectedIds)
+  const cursorMs = useStore((s) => s.timelineCursorMs)
   const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
   const [hoverX, setHoverX] = useState<number | null>(null)
   const [width, setWidth] = useState(800)
@@ -118,6 +119,25 @@ export function Timeline() {
       ctx.strokeRect(x0 + 0.5, 0.5, x1 - x0 - 1, HEIGHT - 1)
     }
 
+    // Time cursor (used as the default start for new manual tracks).
+    if (cursorMs !== undefined && cursorMs >= domain.min && cursorMs <= domain.max) {
+      const cx = xOf(cursorMs)
+      ctx.strokeStyle = '#ffd54f'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(cx, 0)
+      ctx.lineTo(cx, HEIGHT)
+      ctx.stroke()
+      ctx.lineWidth = 1
+      ctx.fillStyle = '#ffd54f'
+      ctx.beginPath()
+      ctx.moveTo(cx - 5, 0)
+      ctx.lineTo(cx + 5, 0)
+      ctx.lineTo(cx, 7)
+      ctx.closePath()
+      ctx.fill()
+    }
+
     if (hoverX !== null) {
       ctx.strokeStyle = 'rgba(255,255,255,0.5)'
       ctx.beginPath()
@@ -126,7 +146,7 @@ export function Timeline() {
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timed, tracks, domain, width, brush, hoverX])
+  }, [timed, tracks, domain, width, brush, hoverX, cursorMs])
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (!domain) return
@@ -146,8 +166,9 @@ export function Timeline() {
       const t1 = tOf(Math.max(x, mx))
       setBrush(null)
       if (Math.abs(mx - x) < 4) {
-        // Click: jump the map to the coordinate closest to this moment.
+        // Click: set the time cursor and jump to the nearest coordinate.
         const state = useStore.getState()
+        state.setTimelineCursor(tOf(x))
         const point = positionAtTime(
           Object.values(state.tracks),
           Object.values(state.photos),

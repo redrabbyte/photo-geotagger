@@ -63,7 +63,7 @@ function exiftoolWriteGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): 
 }
 
 async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {
-  if (!photo.fileHandle || !source.dirHandle) throw new Error('Missing file handle')
+  if (!photo.fileHandle) throw new Error('Missing file handle')
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
 
@@ -82,7 +82,8 @@ async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, bac
     originalDateTimeOriginal: originalDto,
   })
 
-  if (backup) {
+  // Individually-picked files have no folder handle: backups are impossible.
+  if (backup && source.dirHandle) {
     const dir = await directoryOf(source.dirHandle, photo.relativePath)
     await backupOriginal(dir, photo.fileName)
   }
@@ -90,7 +91,11 @@ async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, bac
 }
 
 async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint): Promise<void> {
-  if (!source.dirHandle) throw new Error('Missing source directory handle')
+  if (!source.dirHandle) {
+    throw new Error(
+      'XMP sidecars need access to the containing folder — add the folder as a source, or switch to ExifTool write mode'
+    )
+  }
   const dir = await directoryOf(source.dirHandle, photo.relativePath)
   const name = sidecarNameFor(photo.fileName)
 
@@ -117,13 +122,13 @@ async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint): Promis
 }
 
 async function writeViaExiftool(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {
-  if (!photo.fileHandle || !source.dirHandle) throw new Error('Missing file handle')
+  if (!photo.fileHandle) throw new Error('Missing file handle')
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
   // Worker verifies GPS round-trip and size sanity before returning.
   const rewritten = await exiftoolWriteGps(photo.fileName, original, gps)
 
-  if (backup) {
+  if (backup && source.dirHandle) {
     const dir = await directoryOf(source.dirHandle, photo.relativePath)
     await backupOriginal(dir, photo.fileName)
   }

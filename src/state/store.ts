@@ -17,6 +17,17 @@ import {
   manualAssignment,
   type MatchSettings,
 } from '../domain/matching'
+import {
+  deleteDraftPoint,
+  insertAutoPoint,
+  moveDraftPoint,
+  reinterpolateTimes,
+  setDraftPointTime,
+  trackFromDraft,
+  draftFromTrack,
+  validateDraftTimes,
+  type TrackDraft,
+} from '../domain/trackDraft'
 import type { WriteMode } from '../services/writePipeline'
 
 export const SOURCE_COLORS = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#76b7b2', '#edc948']
@@ -55,6 +66,13 @@ export interface AppState {
   snapToTrack: boolean
   /** One-shot command for the map to fly somewhere; seq forces re-trigger. */
   mapTarget?: { point: GeoPoint; zoom?: number; seq: number }
+  /** Last clicked position on the timeline. */
+  timelineCursorMs?: number
+  /** Track being built/edited on the map. */
+  draft?: TrackDraft
+  draftSelectedIndex?: number
+  /** While set, the next map click places this draft endpoint. */
+  draftPlacement?: { which: 'start' | 'end'; startT: number; endT: number }
   /** Active clock calibration: next map click sets the source's offset. */
   calibrate?: { sourceId: SourceId; photoBaseUtcMs: number; photoName: string }
 
@@ -77,6 +95,21 @@ export interface AppState {
   setSettings(patch: Partial<AppSettings>): void
   setSnapToTrack(snap: boolean): void
   flyTo(point: GeoPoint, zoom?: number): void
+  setTimelineCursor(tMs: number): void
+
+  /** Start a new manual track; placement of endpoints happens via map clicks. */
+  startNewDraft(name: string, startT: number, endT: number, startPoint?: GeoPoint): void
+  startEditTrack(trackId: string): void
+  placeDraftPoint(pos: GeoPoint): void
+  moveDraftPointAt(index: number, pos: GeoPoint): void
+  insertDraftAutoAt(afterIndex: number, pos: GeoPoint): number
+  setDraftTimeAt(index: number, t: number): void
+  deleteDraftPointAt(index: number): void
+  setDraftName(name: string): void
+  selectDraftPoint(index?: number): void
+  cancelDraft(): void
+  /** Returns an error message, or undefined on success. */
+  commitDraft(): string | undefined
   startCalibrate(sourceId: SourceId, photoBaseUtcMs: number, photoName: string): void
   cancelCalibrate(): void
   notify(kind: Notice['kind'], text: string): void
@@ -312,6 +345,120 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({ mapTarget: { point, zoom, seq: (s.mapTarget?.seq ?? 0) + 1 } }))
   },
 
+  setTimelineCursor(timelineCursorMs) {
+    set({ timelineCursorMs })
+  },
+
+  startNewDraft(name, startT, endT, startPoint) {
+    if (startPoint) {
+      set({
+        draft: { name, points: [{ lat: startPoint.lat, lon: startPoint.lon, t: startT, manual: true }] },
+        draftPlacement: { which: 'end', startT, endT },
+        draftSelectedIndex: undefined,
+      })
+    } else {
+      set({
+        draft: { name, points: [] },
+        draftPlacement: { which: 'start', startT, endT },
+        draftSelectedIndex: undefined,
+      })
+    }
+  },
+
+  startEditTrack(trackId) {
+    const track = get().tracks[trackId]
+    if (!track) return
+    set({ draft: draftFromTrack(track), draftPlacement: undefined, draftSelectedIndex: undefined })
+  },
+
+  placeDraftPoint(pos) {
+    set((s) => {
+      if (!s.draft || !s.draftPlacement) return s
+      const { which, startT, endT } = s.draftPlacement
+      const point = { lat: pos.lat, lon: pos.lon, t: which === 'start' ? startT : endT, manual: true }
+      const points = [...s.draft.points, point]
+      return {
+        draft: { ...s.draft, points },
+        draftPlacement: which === 'start' ? { which: 'end', startT, endT } : undefined,
+      }
+    })
+  },
+
+  moveDraftPointAt(index, pos) {
+    set((s) =>
+      s.draft ? { draft: { ...s.draft, points: moveDraftPoint(s.draft.points, index, pos) } } : s
+    )
+  },
+
+  insertDraftAutoAt(afterIndex, pos) {
+    const s = get()
+    if (!s.draft) return -1
+    const points = insertAutoPoint(s.draft.points, afterIndex, pos)
+    set({ draft: { ...s.draft, points }, draftSelectedIndex: afterIndex + 1 })
+    return afterIndex + 1
+  },
+
+  setDraftTimeAt(index, t) {
+    set((s) =>
+      s.draft ? { draft: { ...s.draft, points: setDraftPointTime(s.draft.points, index, t) } } : s
+    )
+  },
+
+  deleteDraftPointAt(index) {
+    set((s) => {
+      if (!s.draft) return s
+      const points = deleteDraftPoint(s.draft.points, index)
+      return {
+        draft: { ...s.draft, points },
+        draftSelectedIndex: s.draftSelectedIndex === index ? undefined : s.draftSelectedIndex,
+      }
+    })
+  },
+
+  setDraftName(name) {
+    set((s) => (s.draft ? { draft: { ...s.draft, name } } : s))
+  },
+
+  selectDraftPoint(draftSelectedIndex) {
+    set({ draftSelectedIndex })
+  },
+
+  cancelDraft() {
+    set({ draft: undefined, draftPlacement: undefined, draftSelectedIndex: undefined })
+  },
+
+  commitDraft() {
+    const s = get()
+    const draft = s.draft
+    if (!draft) return 'No track being edited'
+    if (draft.points.length < 2) return 'A track needs at least a start and an end point'
+    const points = reinterpolateTimes(draft.points)
+    const invalid = validateDraftTimes(points)
+    if (invalid) return invalid
+
+    if (draft.trackId && s.tracks[draft.trackId]) {
+      const old = s.tracks[draft.trackId]
+      const track = trackFromDraft({ ...draft, points }, old.id, old.color, old.fileName)
+      set({
+        tracks: { ...s.tracks, [old.id]: track },
+        draft: undefined,
+        draftPlacement: undefined,
+        draftSelectedIndex: undefined,
+      })
+    } else {
+      const id = nextTrackId()
+      const color = TRACK_COLORS[Object.keys(s.tracks).length % TRACK_COLORS.length]
+      const track = trackFromDraft({ ...draft, points }, id, color)
+      set({
+        tracks: { ...s.tracks, [id]: track },
+        draft: undefined,
+        draftPlacement: undefined,
+        draftSelectedIndex: undefined,
+      })
+    }
+    return undefined
+  },
+
   startCalibrate(sourceId, photoBaseUtcMs, photoName) {
     set({ calibrate: { sourceId, photoBaseUtcMs, photoName } })
   },
@@ -330,6 +477,11 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({ notices: s.notices.filter((n) => n.id !== id) }))
   },
 }))
+
+// Test/debug hook (dev builds only): lets E2E tests inspect and drive state.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  ;(window as unknown as Record<string, unknown>).__store = useStore
+}
 
 let sourceCounter = 1
 let trackCounter = 1

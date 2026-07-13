@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { isStale } from '../domain/matching'
 import { useStore } from '../state/store'
 import {
+  addFilesFlow,
   addGpxFlow,
   addSourceFlow,
   listRestorableGpx,
@@ -9,6 +10,7 @@ import {
   type RestorableGpx,
   type RestorableSource,
 } from '../services/appActions'
+import { positionAtTime } from '../domain/positionAtTime'
 import { formatOffset, parseOffset } from './format'
 
 function OffsetEditor({ sourceId, value }: { sourceId: string; value: number }) {
@@ -48,6 +50,7 @@ export function SourcesPanel() {
   const scanning = useStore((s) => s.scanning)
   const [restorable, setRestorable] = useState<RestorableSource[]>([])
   const [restorableGpx, setRestorableGpx] = useState<RestorableGpx[]>([])
+  const [showNewTrack, setShowNewTrack] = useState(false)
 
   useEffect(() => {
     listRestorableSources().then(setRestorable).catch(() => setRestorable([]))
@@ -100,7 +103,10 @@ export function SourcesPanel() {
     <div className="sources-panel">
       <div className="panel-header">
         <h3>Sources</h3>
-        <button onClick={() => void addSourceFlow()}>+ Add folder</button>
+        <span className="button-row">
+          <button onClick={() => void addSourceFlow()}>+ Folder</button>
+          <button title="Pick individual image files instead of a whole folder" onClick={() => void addFilesFlow()}>+ Files</button>
+        </span>
       </div>
       {scanning && <div className="scanning-note">Scanning photos…</div>}
 
@@ -164,7 +170,12 @@ export function SourcesPanel() {
 
       <div className="panel-header">
         <h3>GPX tracks</h3>
-        <button onClick={() => void addGpxFlow()}>+ Add GPX</button>
+        <span className="button-row">
+          <button onClick={() => void addGpxFlow()}>+ GPX</button>
+          <button title="Draw a track by hand: set start/end time, place points on the map" onClick={() => setShowNewTrack(true)}>
+            + New track
+          </button>
+        </span>
       </div>
       {trackList.length === 0 && <p className="muted">Tracks found inside source folders load automatically.</p>}
       {trackList.map((t) => (
@@ -178,9 +189,73 @@ export function SourcesPanel() {
             {t.name}
           </span>
           <span className="muted small">{t.points.length} pts</span>
+          <button
+            className="remove"
+            title="Edit this track on the map (move points, insert points, adjust times, export as GPX)"
+            onClick={() => {
+              useStore.getState().startEditTrack(t.id)
+              useStore.getState().flyTo({ lat: t.points[0].lat, lon: t.points[0].lon }, 13)
+            }}
+          >
+            ✎
+          </button>
           <button className="remove" onClick={() => useStore.getState().removeTrack(t.id)}>×</button>
         </div>
       ))}
+
+      {showNewTrack && <NewTrackDialog onClose={() => setShowNewTrack(false)} />}
+    </div>
+  )
+}
+
+function NewTrackDialog({ onClose }: { onClose: () => void }) {
+  const cursorMs = useStore((s) => s.timelineCursorMs)
+  const defaultStart = cursorMs ?? Date.now()
+  const [name, setName] = useState('Manual track')
+  const [startText, setStartText] = useState(new Date(defaultStart).toISOString().slice(0, 19))
+  const [endText, setEndText] = useState(new Date(defaultStart + 3600_000).toISOString().slice(0, 19))
+
+  const create = () => {
+    const store = useStore.getState()
+    const startT = Date.parse(`${startText}Z`)
+    const endT = Date.parse(`${endText}Z`)
+    if (!Number.isFinite(startT) || !Number.isFinite(endT)) {
+      store.notify('error', 'Invalid start or end time')
+      return
+    }
+    if (endT < startT) {
+      store.notify('error', 'End time must be after the start time')
+      return
+    }
+    // Start point defaults to the position nearest the start time (timeline
+    // cursor); if nothing is known, the user places it with a map click.
+    const startPoint = positionAtTime(
+      Object.values(store.tracks),
+      Object.values(store.photos),
+      store.sources,
+      startT
+    )
+    store.startNewDraft(name.trim() || 'Manual track', startT, endT, startPoint)
+    if (startPoint) store.flyTo(startPoint)
+    onClose()
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>New manual track</h3>
+        <p className="muted small">
+          Times are UTC. The start defaults to the timeline cursor (click the timeline to set it).
+          After creating, {`you'll`} place the start/end on the map, then refine by dragging.
+        </p>
+        <label className="small">Name <input value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <label className="small">Start (UTC) <input type="datetime-local" step={1} value={startText} onChange={(e) => setStartText(e.target.value)} /></label>
+        <label className="small">End (UTC) <input type="datetime-local" step={1} value={endText} onChange={(e) => setEndText(e.target.value)} /></label>
+        <div className="modal-actions">
+          <button onClick={onClose}>Cancel</button>
+          <button className="primary" onClick={create}>Create & place on map</button>
+        </div>
+      </div>
     </div>
   )
 }

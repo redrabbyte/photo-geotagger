@@ -141,6 +141,57 @@ export async function addSourceFlow(): Promise<void> {
   await persistCurrentSources()
 }
 
+const PHOTO_EXTENSIONS = ['.jpg', '.jpeg', '.jpe', '.heic', '.heif', '.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf', '.orf', '.rw2']
+
+/**
+ * Pick individual image files (not a folder). They form their own source;
+ * without a folder handle, sidecars and .orig backups are unavailable, but
+ * in-place writes work after a per-file permission grant.
+ */
+export async function addFilesFlow(): Promise<void> {
+  const store = useStore.getState()
+  if (typeof showOpenFilePicker !== 'function') {
+    store.notify('error', 'File picker unavailable in this browser.')
+    return
+  }
+  let handles: FileSystemFileHandle[]
+  try {
+    handles = await showOpenFilePicker({
+      multiple: true,
+      types: [{ description: 'Photos', accept: { 'image/*': PHOTO_EXTENSIONS } }],
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
+    store.notify('error', `Could not open files: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+  if (handles.length === 0) return
+
+  const existing = Object.keys(store.sources).length
+  const source: Source = {
+    id: nextSourceId(),
+    name: handles.length === 1 ? handles[0].name : `${handles[0].name} +${handles.length - 1}`,
+    color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
+    clockOffsetMs: 0,
+    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
+  }
+  const photos: Photo[] = []
+  let skipped = 0
+  for (const h of handles) {
+    const record = makePhotoRecord(source.id, h, h.name, h.name, 0, 0)
+    if (record) photos.push(record)
+    else skipped++
+  }
+  if (photos.length === 0) {
+    store.notify('error', 'None of the selected files are supported photo formats.')
+    return
+  }
+  store.addSource(source, photos)
+  store.setScanning(true)
+  getScanClient().enqueue(photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind })))
+  store.notify('info', `Added ${photos.length} photo(s)${skipped ? `, skipped ${skipped} unsupported file(s)` : ''}`)
+}
+
 export interface RestorableSource {
   name: string
   restore: () => Promise<void>
@@ -235,6 +286,49 @@ export async function listRestorableGpx(): Promise<RestorableGpx[]> {
   }))
 }
 
+/** Save the current track draft as a .gpx file (picker with download fallback). */
+export async function exportDraftGpx(): Promise<void> {
+  const store = useStore.getState()
+  const draft = store.draft
+  if (!draft || draft.points.length < 2) {
+    store.notify('info', 'Nothing to export — the track needs at least two points.')
+    return
+  }
+  const { generateGpx, reinterpolateTimes, validateDraftTimes } = await import('../domain/trackDraft')
+  const points = reinterpolateTimes(draft.points)
+  const invalid = validateDraftTimes(points)
+  if (invalid) {
+    store.notify('error', invalid)
+    return
+  }
+  const xml = generateGpx(draft.name || 'manual track', points)
+  const suggestedName = `${(draft.name || 'manual-track').replace(/[^\w.-]+/g, '-')}.gpx`
+
+  if (typeof showSaveFilePicker === 'function') {
+    try {
+      const handle = await showSaveFilePicker({
+        suggestedName,
+        types: [{ description: 'GPX track', accept: { 'application/gpx+xml': ['.gpx'] } }],
+      })
+      const writable = await handle.createWritable()
+      await writable.write(xml)
+      await writable.close()
+      store.notify('success', `Saved ${handle.name}`)
+      return
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      // fall through to download
+    }
+  }
+  const url = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = suggestedName
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  store.notify('success', `Downloaded ${suggestedName}`)
+}
+
 /** Write all dirty photos (or the given subset) using current settings. */
 export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   const store = useStore.getState()
@@ -248,10 +342,20 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   // Folders are opened read-only; escalate to readwrite now (user gesture).
   for (const sourceId of new Set(targets.map((p) => p.sourceId))) {
     const source = store.sources[sourceId]
-    if (!source?.dirHandle) continue
-    if (!(await ensurePermission(source.dirHandle, 'readwrite'))) {
-      store.notify('error', `Write permission denied for "${source.name}" — nothing was written.`)
-      return
+    if (!source) continue
+    if (source.dirHandle) {
+      if (!(await ensurePermission(source.dirHandle, 'readwrite'))) {
+        store.notify('error', `Write permission denied for "${source.name}" — nothing was written.`)
+        return
+      }
+    } else {
+      // Individually-picked files: permission is granted per file handle.
+      for (const p of targets.filter((t) => t.sourceId === sourceId)) {
+        if (p.fileHandle && !(await ensurePermission(p.fileHandle, 'readwrite'))) {
+          store.notify('error', `Write permission denied for "${p.fileName}" — nothing was written.`)
+          return
+        }
+      }
     }
   }
 

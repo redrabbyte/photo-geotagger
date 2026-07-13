@@ -30,8 +30,16 @@ declare global {
     excludeAcceptAllOption?: boolean
   }
 
+  interface SaveFilePickerOptions {
+    suggestedName?: string
+    id?: string
+    types?: Array<{ description?: string; accept: Record<string, string[]> }>
+    excludeAcceptAllOption?: boolean
+  }
+
   function showDirectoryPicker(options?: DirectoryPickerOptions): Promise<FileSystemDirectoryHandle>
   function showOpenFilePicker(options?: OpenFilePickerOptions): Promise<FileSystemFileHandle[]>
+  function showSaveFilePicker(options?: SaveFilePickerOptions): Promise<FileSystemFileHandle>
 
   interface Window {
     showDirectoryPicker?: typeof showDirectoryPicker

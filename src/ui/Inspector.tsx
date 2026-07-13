@@ -3,6 +3,7 @@ import type { AssignmentMethod } from '../domain/types'
 import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
 import { useStore } from '../state/store'
+import { TrackEditorPanel } from './TrackEditorPanel'
 import { formatCoord, formatDeltaMs, formatUtc } from './format'
 
 const METHODS: { key: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated' | 'inherit'>; label: string; hint: string }[] = [
@@ -14,6 +15,7 @@ const METHODS: { key: Extract<AssignmentMethod, 'closest' | 'before' | 'after' |
 ]
 
 export function Inspector() {
+  const draftActive = useStore((s) => s.draft !== undefined)
   const photos = useStore((s) => s.photos)
   const sources = useStore((s) => s.sources)
   const tracks = useStore((s) => s.tracks)
@@ -44,6 +46,10 @@ export function Inspector() {
     if (summary.noMatch) parts.push(`${summary.noMatch} without match`)
     if (summary.noTime) parts.push(`${summary.noTime} without usable time`)
     store.notify(summary.assigned > 0 ? 'success' : 'info', parts.join(', '))
+  }
+
+  if (draftActive) {
+    return <TrackEditorPanel />
   }
 
   if (selectedCount === 0) {

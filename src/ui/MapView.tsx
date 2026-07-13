@@ -5,8 +5,13 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import type { GeoPoint, Track } from '../domain/types'
 import { displayPosition, gpsStatus } from '../domain/types'
 import { projectOntoTrack } from '../domain/projectOntoTrack'
+import { projectOntoDraft, type TrackDraft } from '../domain/trackDraft'
 import { useStore } from '../state/store'
 import { formatDeltaMs, formatUtc } from './format'
+
+const DRAFT_LINE_COLOR = '#ffd54f'
+const DRAFT_MANUAL_COLOR = '#ff7043'
+const DRAFT_AUTO_COLOR = '#4fc3f7'
 
 const STATUS_STROKE: Record<string, string> = {
   original: '#2e7d32',
@@ -67,10 +72,13 @@ export function MapView() {
   const tracks = useStore((s) => s.tracks)
   const selectedIds = useStore((s) => s.selectedIds)
   const calibrate = useStore((s) => s.calibrate)
+  const draft = useStore((s) => s.draft)
+  const draftSelectedIndex = useStore((s) => s.draftSelectedIndex)
+  const draftPlacement = useStore((s) => s.draftPlacement)
 
   // Live values for event handlers registered once.
-  const stateRef = useRef({ photos, sources, tracks, selectedIds, calibrate })
-  stateRef.current = { photos, sources, tracks, selectedIds, calibrate }
+  const stateRef = useRef({ photos, sources, tracks, selectedIds, calibrate, draft: draft as TrackDraft | undefined, draftPlacement })
+  stateRef.current = { photos, sources, tracks, selectedIds, calibrate, draft, draftPlacement }
 
   // Positions being dragged override store positions until mouseup commits.
   const dragPositions = useRef(new Map<string, GeoPoint>()).current
@@ -112,9 +120,15 @@ export function MapView() {
       attributionControl: { compact: true },
     })
     mapRef.current = map
+    if (import.meta.env.DEV) {
+      ;(window as unknown as Record<string, unknown>).__map = map
+    }
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
 
-    map.on('load', () => {
+    // 'style.load' instead of 'load': the latter waits for tiles and never
+    // fires when tile requests fail (offline, blocked by a proxy) — which
+    // would leave the map without any photo/track layers or interactions.
+    map.once('style.load', () => {
       map.addSource('tracks', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({
         id: 'tracks-line',
@@ -143,6 +157,33 @@ export function MapView() {
         },
       })
 
+      // Track draft (manual track builder / GPX editor).
+      map.addSource('draft', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({
+        id: 'draft-line',
+        type: 'line',
+        source: 'draft',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        paint: {
+          'line-color': DRAFT_LINE_COLOR,
+          'line-width': 5,
+          'line-dasharray': [1.5, 1],
+          'line-opacity': 0.9,
+        },
+      })
+      map.addLayer({
+        id: 'draft-points',
+        type: 'circle',
+        source: 'draft',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': ['case', ['==', ['get', 'selected'], 1], 9, 7],
+          'circle-color': ['case', ['==', ['get', 'manual'], 1], DRAFT_MANUAL_COLOR, DRAFT_AUTO_COLOR],
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+        },
+      })
+
       const canvas = map.getCanvas()
 
       map.on('mouseenter', 'photos-circle', () => {
@@ -152,10 +193,20 @@ export function MapView() {
         canvas.style.cursor = ''
       })
 
-      // Click empty map: calibration click or deselect.
+      // Click empty map: draft endpoint placement, calibration click, or deselect.
       map.on('click', (e) => {
-        const feats = map.queryRenderedFeatures(e.point, { layers: ['photos-circle'] })
         const store = useStore.getState()
+        if (stateRef.current.draftPlacement) {
+          store.placeDraftPoint({ lat: e.lngLat.lat, lon: e.lngLat.lng })
+          return
+        }
+        if (stateRef.current.draft) {
+          const pointFeats = map.queryRenderedFeatures(e.point, { layers: ['draft-points'] })
+          const idx = pointFeats[0]?.properties?.index
+          store.selectDraftPoint(typeof idx === 'number' ? idx : undefined)
+          return
+        }
+        const feats = map.queryRenderedFeatures(e.point, { layers: ['photos-circle'] })
         const cal = stateRef.current.calibrate
         if (cal) {
           const proj = projectAcrossTracks(Object.values(stateRef.current.tracks), {
@@ -247,7 +298,7 @@ export function MapView() {
       }
 
       map.on('mousedown', 'photos-circle', (e) => {
-        if (stateRef.current.calibrate) return
+        if (stateRef.current.calibrate || stateRef.current.draft) return
         const feature = e.features?.[0]
         const id = feature?.properties?.id as string | undefined
         if (!id) return
@@ -256,6 +307,60 @@ export function MapView() {
         map.dragPan.disable()
         map.on('mousemove', onMove)
         map.once('mouseup', onUp)
+      })
+
+      // --- draft editing: drag points; drag the line to insert a point ---
+      let draggingDraftIndex: number | undefined
+
+      const onDraftMove = (e: maplibregl.MapMouseEvent) => {
+        if (draggingDraftIndex === undefined) return
+        useStore.getState().moveDraftPointAt(draggingDraftIndex, { lat: e.lngLat.lat, lon: e.lngLat.lng })
+      }
+      const onDraftUp = () => {
+        draggingDraftIndex = undefined
+        map.off('mousemove', onDraftMove)
+        map.dragPan.enable()
+      }
+
+      map.on('mousedown', 'draft-points', (e) => {
+        if (!stateRef.current.draft) return
+        const idx = e.features?.[0]?.properties?.index
+        if (typeof idx !== 'number') return
+        e.preventDefault()
+        draggingDraftIndex = idx
+        useStore.getState().selectDraftPoint(idx)
+        map.dragPan.disable()
+        map.on('mousemove', onDraftMove)
+        map.once('mouseup', onDraftUp)
+      })
+
+      map.on('mousedown', 'draft-line', (e) => {
+        const draft = stateRef.current.draft
+        if (!draft) return
+        // A point on top of the line wins — its own handler runs instead.
+        if (map.queryRenderedFeatures(e.point, { layers: ['draft-points'] }).length > 0) return
+        const proj = projectOntoDraft(draft.points, { lat: e.lngLat.lat, lon: e.lngLat.lng })
+        if (!proj) return
+        e.preventDefault()
+        const newIndex = useStore.getState().insertDraftAutoAt(proj.segmentIndex, proj.point)
+        if (newIndex < 0) return
+        draggingDraftIndex = newIndex
+        map.dragPan.disable()
+        map.on('mousemove', onDraftMove)
+        map.once('mouseup', onDraftUp)
+      })
+
+      map.on('mouseenter', 'draft-points', () => {
+        canvas.style.cursor = 'move'
+      })
+      map.on('mouseleave', 'draft-points', () => {
+        canvas.style.cursor = ''
+      })
+      map.on('mouseenter', 'draft-line', () => {
+        if (stateRef.current.draft) canvas.style.cursor = 'copy'
+      })
+      map.on('mouseleave', 'draft-line', () => {
+        canvas.style.cursor = ''
       })
 
       setMapReady(true)
@@ -295,6 +400,36 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos, sources, selectedIds, mapReady])
 
+  // Draft layer updates.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+    const src = map.getSource('draft') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    const features: Feature[] = []
+    if (draft && draft.points.length > 0) {
+      if (draft.points.length >= 2) {
+        features.push({
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: draft.points.map((p) => [p.lon, p.lat]) },
+          properties: {},
+        })
+      }
+      draft.points.forEach((p, index) => {
+        features.push({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+          properties: {
+            index,
+            manual: p.manual ? 1 : 0,
+            selected: index === draftSelectedIndex ? 1 : 0,
+          },
+        })
+      })
+    }
+    src.setData({ type: 'FeatureCollection', features })
+  }, [draft, draftSelectedIndex, mapReady])
+
   // Fit bounds once when positions first appear.
   useEffect(() => {
     const map = mapRef.current
@@ -321,6 +456,12 @@ export function MapView() {
         <div className="map-banner">
           Calibrating “{calibrate.photoName}”: click the spot on a track where this photo was taken.
           <button onClick={() => useStore.getState().cancelCalibrate()}>Cancel</button>
+        </div>
+      )}
+      {draftPlacement && (
+        <div className="map-banner">
+          Click the map to place the track’s {draftPlacement.which === 'start' ? 'start' : 'end'} point.
+          <button onClick={() => useStore.getState().cancelDraft()}>Cancel</button>
         </div>
       )}
     </div>
