@@ -81,11 +81,15 @@ async function writeGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Pr
   return outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength) as ArrayBuffer
 }
 
-/** Full raw tag dump (all groups, duplicates included) for diagnostics. */
+/**
+ * Full raw tag dump for diagnostics. -ee scans embedded documents too —
+ * e.g. the MP4 trailer of Samsung/Android "motion photos", which can carry
+ * GPS that gallery apps read even when the EXIF GPS was stripped.
+ */
 async function inspect(fileName: string, bytes: ArrayBuffer): Promise<string> {
   const result = await parseMetadata(
     { name: fileName, data: new Uint8Array(bytes) },
-    { args: ['-a', '-G1', '-s'], fetch: wasmFetch }
+    { args: ['-ee', '-a', '-G3:1', '-s'], fetch: wasmFetch }
   )
   if (!result.success) {
     throw new Error(result.error || `exiftool failed with exit code ${result.exitCode}`)
