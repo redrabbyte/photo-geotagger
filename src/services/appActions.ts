@@ -1,0 +1,223 @@
+import type { Photo, Source, Track } from '../domain/types'
+import { isDirty } from '../domain/types'
+import { parseGpx, GpxParseError } from '../domain/parseGpx'
+import { enumerateFolder, fsaSupported } from './fs/sources'
+import { ensurePermission, loadPersistedSources, persistSources } from './fs/handleStore'
+import { ScanClient } from './scanClient'
+import { writeBatch } from './writePipeline'
+import { useStore, nextSourceId, nextTrackId, makePhotoRecord, SOURCE_COLORS, type ScanUpdate } from '../state/store'
+
+let scanClient: ScanClient | undefined
+let updateBuffer: ScanUpdate[] = []
+let flushTimer: ReturnType<typeof setTimeout> | undefined
+
+function flushUpdates(): void {
+  if (updateBuffer.length === 0) return
+  const batch = updateBuffer
+  updateBuffer = []
+  useStore.getState().applyScanUpdates(batch)
+}
+
+function queueUpdate(update: ScanUpdate): void {
+  updateBuffer.push(update)
+  if (!flushTimer) {
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined
+      flushUpdates()
+    }, 120)
+  }
+}
+
+function getScanClient(): ScanClient {
+  if (!scanClient) {
+    scanClient = new ScanClient({
+      onMeta: (id, meta) => queueUpdate({ id, kind: 'meta', meta }),
+      onThumb: (id, url) => queueUpdate({ id, kind: 'thumb', url }),
+      onThumbFailed: (id) => queueUpdate({ id, kind: 'thumb-failed' }),
+      onError: (id, message) => queueUpdate({ id, kind: 'error', message }),
+      onIdle: () => {
+        flushUpdates()
+        useStore.getState().setScanning(false)
+      },
+    })
+  }
+  return scanClient
+}
+
+async function persistCurrentSources(): Promise<void> {
+  const { sources } = useStore.getState()
+  await persistSources(
+    Object.values(sources)
+      .filter((s) => s.dirHandle)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        color: s.color,
+        clockOffsetMs: s.clockOffsetMs,
+        assumedTzOffsetMin: s.assumedTzOffsetMin,
+        dirHandle: s.dirHandle!,
+      }))
+  )
+}
+
+async function ingestSource(source: Source): Promise<void> {
+  const store = useStore.getState()
+  if (!source.dirHandle) return
+  const scan = await enumerateFolder(source.dirHandle)
+
+  const photos: Photo[] = []
+  for (const f of scan.photos) {
+    const file = await f.handle.getFile().catch(() => undefined)
+    const record = makePhotoRecord(
+      source.id,
+      f.handle,
+      f.relativePath,
+      f.name,
+      file?.size ?? 0,
+      file?.lastModified ?? 0
+    )
+    if (record) photos.push(record)
+  }
+  store.addSource(source, photos)
+
+  // GPX files found inside the folder are loaded as tracks automatically.
+  for (const gpx of scan.gpxFiles) {
+    try {
+      const text = await (await gpx.handle.getFile()).text()
+      const tracks = parseGpx(text, gpx.name, () => nextTrackId())
+      useStore.getState().addTracks(tracks)
+    } catch (err) {
+      store.notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${gpx.name}`)
+    }
+  }
+
+  if (photos.length > 0) {
+    store.setScanning(true)
+    getScanClient().enqueue(
+      photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind }))
+    )
+  }
+  store.notify(
+    'info',
+    `${source.name}: ${photos.length} photos${scan.gpxFiles.length ? `, ${scan.gpxFiles.length} GPX file(s)` : ''}`
+  )
+}
+
+/** Pick a folder and add it as a new source. */
+export async function addSourceFlow(): Promise<void> {
+  const store = useStore.getState()
+  if (!fsaSupported()) {
+    store.notify('error', 'This browser has no File System Access API — use Chrome or Edge.')
+    return
+  }
+  let dirHandle: FileSystemDirectoryHandle
+  try {
+    dirHandle = await showDirectoryPicker({ mode: 'readwrite', id: 'photo-source' })
+  } catch {
+    return // user cancelled
+  }
+  const existing = Object.keys(store.sources).length
+  const source: Source = {
+    id: nextSourceId(),
+    name: dirHandle.name || `Source ${existing + 1}`,
+    color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
+    clockOffsetMs: 0,
+    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
+    dirHandle,
+  }
+  await ingestSource(source)
+  await persistCurrentSources()
+}
+
+export interface RestorableSource {
+  name: string
+  restore: () => Promise<void>
+}
+
+/** List sources persisted from an earlier session; each restores on click (user gesture). */
+export async function listRestorableSources(): Promise<RestorableSource[]> {
+  if (!fsaSupported()) return []
+  const persisted = await loadPersistedSources()
+  return persisted.map((p) => ({
+    name: p.name,
+    restore: async () => {
+      const store = useStore.getState()
+      if (!(await ensurePermission(p.dirHandle))) {
+        store.notify('error', `Permission denied for "${p.name}" — pick the folder again instead.`)
+        return
+      }
+      const source: Source = {
+        id: nextSourceId(),
+        name: p.name,
+        color: p.color,
+        clockOffsetMs: p.clockOffsetMs,
+        assumedTzOffsetMin: p.assumedTzOffsetMin,
+        dirHandle: p.dirHandle,
+      }
+      await ingestSource(source)
+    },
+  }))
+}
+
+/** Pick GPX files explicitly (outside any source folder). */
+export async function addGpxFlow(): Promise<void> {
+  const store = useStore.getState()
+  if (typeof showOpenFilePicker !== 'function') {
+    store.notify('error', 'File picker unavailable in this browser.')
+    return
+  }
+  let handles: FileSystemFileHandle[]
+  try {
+    handles = await showOpenFilePicker({
+      multiple: true,
+      types: [{ description: 'GPX tracks', accept: { 'application/gpx+xml': ['.gpx'] } }],
+    })
+  } catch {
+    return // cancelled
+  }
+  for (const handle of handles) {
+    try {
+      const file = await handle.getFile()
+      const tracks: Track[] = parseGpx(await file.text(), file.name, () => nextTrackId())
+      store.addTracks(tracks)
+      store.notify('success', `Loaded ${file.name}: ${tracks.reduce((n, t) => n + t.points.length, 0)} points`)
+    } catch (err) {
+      store.notify('error', err instanceof GpxParseError ? err.message : `Failed to parse ${handle.name}`)
+    }
+  }
+}
+
+/** Write all dirty photos (or the given subset) using current settings. */
+export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
+  const store = useStore.getState()
+  const all = Object.values(store.photos).filter((p) => isDirty(p) && p.writeState !== 'writing')
+  const targets = onlyIds ? all.filter((p) => onlyIds.includes(p.id)) : all
+  if (targets.length === 0) {
+    store.notify('info', 'Nothing to write — no photos with unsaved positions.')
+    return
+  }
+
+  store.markWriting(targets.map((p) => p.id))
+  const sourcesMap = new Map(Object.entries(store.sources))
+  const results = await writeBatch(
+    targets,
+    sourcesMap,
+    {
+      mode: store.settings.writeMode,
+      backupOriginals: store.settings.backupOriginals,
+      onProgress: (done, total, current) =>
+        useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
+    },
+    (result) => useStore.getState().markWriteResult(result.photoId, result.ok, result.target, result.error)
+  )
+
+  const okCount = results.filter((r) => r.ok).length
+  const failed = results.length - okCount
+  useStore.getState().setWriteProgress(undefined)
+  useStore
+    .getState()
+    .notify(
+      failed ? 'error' : 'success',
+      failed ? `Wrote ${okCount}/${results.length} — ${failed} failed (see photo badges)` : `Wrote GPS to ${okCount} file(s)`
+    )
+}

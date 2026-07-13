@@ -29,6 +29,8 @@ export interface Source {
 export interface PhotoMeta {
   /** DateTimeOriginal parsed as wall-clock milliseconds (as if UTC). */
   captureLocalMs: number
+  /** Where the capture time came from; 'file' = filesystem mtime fallback. */
+  timeSource?: 'exif' | 'file'
   /** Timezone offset in minutes east of UTC from OffsetTimeOriginal, if present. */
   tzOffsetMin?: number
   /** GPS coordinates already present in the file. */
