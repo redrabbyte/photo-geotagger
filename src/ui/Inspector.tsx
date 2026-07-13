@@ -90,8 +90,19 @@ export function Inspector() {
               <tr><td>Status</td><td><span className={`dot dot-${gpsStatus(active)}`} /> {gpsStatus(active)}{active.assignment ? ` (${active.assignment.method}${active.assignment.degraded ? ', degraded' : ''})` : ''}</td></tr>
               <tr>
                 <td>Position</td>
-                <td>{pos ? `${formatCoord(pos.lat, true)}, ${formatCoord(pos.lon, false)}${pos.ele !== undefined ? `, ${pos.ele.toFixed(0)}m` : ''}` : '—'}</td>
+                <td>
+                  {pos
+                    ? `${formatCoord(pos.lat, true)}, ${formatCoord(pos.lon, false)}${pos.ele !== undefined ? `, ${pos.ele.toFixed(0)}m` : ''}`
+                    : active.scanState === 'done'
+                      ? 'no GPS in this file'
+                      : active.scanState === 'error'
+                        ? 'metadata scan failed'
+                        : 'scanning…'}
+                </td>
               </tr>
+              {active.scanError && (
+                <tr><td className="warn">Scan error</td><td className="warn">{active.scanError}</td></tr>
+              )}
               {neighbors?.before && (
                 <tr><td>Track before</td><td>{formatDeltaMs(neighbors.before.deltaMs)}</td></tr>
               )}

@@ -40,6 +40,16 @@ export async function extractMeta(input: File | ArrayBuffer, lastModified: numbe
   } catch {
     exif = undefined
   }
+  // Chunked File reading can fail on some platforms (e.g. Android SAF-backed
+  // files); when nothing usable came back, retry once with the whole buffer.
+  if ((!exif || (!exif.DateTimeOriginal && exif.latitude === undefined)) && input instanceof File) {
+    try {
+      const full = await input.arrayBuffer()
+      exif = (await exifr.parse(full, EXIFR_OPTIONS)) ?? exif
+    } catch {
+      // keep whatever the first attempt produced
+    }
+  }
 
   const dto = exif?.DateTimeOriginal ?? exif?.CreateDate
   const meta: PhotoMeta = dto instanceof Date

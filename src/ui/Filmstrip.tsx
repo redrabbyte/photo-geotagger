@@ -98,6 +98,7 @@ export function Filmstrip() {
                 {isDirty(p) && <span className="dirty-flag" title="Unsaved position">●</span>}
                 {p.writeState === 'written' && <span className="written-flag" title={`Written (${p.writeTarget})`}>✓</span>}
                 {p.writeState === 'write-error' && <span className="error-flag" title={p.writeError}>!</span>}
+                {p.scanState === 'error' && <span className="error-flag" title={p.scanError}>!</span>}
               </div>
             </div>
           )
