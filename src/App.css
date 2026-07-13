@@ -570,11 +570,9 @@ select {
   .right { order: 1; }
   .left { order: 2; }
 
+  /* Status toasts cover too much of a phone screen — drop them entirely. */
   .toasts {
-    bottom: 160px;
-    left: 12px;
-    right: 12px;
-    max-width: none;
+    display: none;
   }
 }
 
