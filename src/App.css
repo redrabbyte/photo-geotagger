@@ -617,3 +617,24 @@ select {
   gap: 10px;
   margin-top: 14px;
 }
+
+.modal.exif-dump {
+  max-width: min(680px, 94vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.exif-dump pre {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

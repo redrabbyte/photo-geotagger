@@ -27,16 +27,13 @@ const wasmFetch =(...args: unknown[]): Promise<Response> => {
   return fetch(input, init)
 }
 
-export interface ExiftoolWriteRequest {
-  type: 'write-gps'
-  requestId: number
-  fileName: string
-  bytes: ArrayBuffer
-  gps: GeoPoint
-}
+export type ExiftoolRequest =
+  | { type: 'write-gps'; requestId: number; fileName: string; bytes: ArrayBuffer; gps: GeoPoint }
+  | { type: 'inspect'; requestId: number; fileName: string; bytes: ArrayBuffer }
 
-export type ExiftoolWriteResponse =
+export type ExiftoolResponse =
   | { type: 'result'; requestId: number; ok: true; bytes: ArrayBuffer }
+  | { type: 'result'; requestId: number; ok: true; text: string }
   | { type: 'result'; requestId: number; ok: false; error: string }
 
 async function writeGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Promise<ArrayBuffer> {
@@ -84,17 +81,37 @@ async function writeGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Pr
   return outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength) as ArrayBuffer
 }
 
-self.onmessage = async (event: MessageEvent<ExiftoolWriteRequest>) => {
-  const { requestId, fileName, bytes, gps } = event.data
+/** Full raw tag dump (all groups, duplicates included) for diagnostics. */
+async function inspect(fileName: string, bytes: ArrayBuffer): Promise<string> {
+  const result = await parseMetadata(
+    { name: fileName, data: new Uint8Array(bytes) },
+    { args: ['-a', '-G1', '-s'], fetch: wasmFetch }
+  )
+  if (!result.success) {
+    throw new Error(result.error || `exiftool failed with exit code ${result.exitCode}`)
+  }
+  return result.data
+}
+
+self.onmessage = async (event: MessageEvent<ExiftoolRequest>) => {
+  const msg = event.data
   try {
-    const out = await writeGps(fileName, bytes, gps)
-    postMessage({ type: 'result', requestId, ok: true, bytes: out } satisfies ExiftoolWriteResponse, { transfer: [out] })
+    if (msg.type === 'write-gps') {
+      const out = await writeGps(msg.fileName, msg.bytes, msg.gps)
+      postMessage(
+        { type: 'result', requestId: msg.requestId, ok: true, bytes: out } satisfies ExiftoolResponse,
+        { transfer: [out] }
+      )
+    } else {
+      const text = await inspect(msg.fileName, msg.bytes)
+      postMessage({ type: 'result', requestId: msg.requestId, ok: true, text } satisfies ExiftoolResponse)
+    }
   } catch (err) {
     postMessage({
       type: 'result',
-      requestId,
+      requestId: msg.requestId,
       ok: false,
       error: err instanceof Error ? err.message : String(err),
-    } satisfies ExiftoolWriteResponse)
+    } satisfies ExiftoolResponse)
   }
 }

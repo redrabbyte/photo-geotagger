@@ -4,7 +4,7 @@ import { generateXmpSidecar, mergeGpsIntoXmp, sidecarNameFor } from '../domain/x
 import { insertGpsIntoJpeg, validateJpegOutput } from './exif/writeJpeg'
 import { backupOriginal, writeFileBytes } from './fs/safeWrite'
 import { directoryOf } from './fs/sources'
-import type { ExiftoolWriteRequest, ExiftoolWriteResponse } from '../workers/exiftool.worker'
+import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
 export type WriteMode = 'safe' | 'exiftool'
 
@@ -24,19 +24,20 @@ export interface WriteOptions {
 /** Lazy singleton for the ExifTool worker; the 25 MB WASM loads on first use. */
 let exiftoolWorker: Worker | undefined
 let nextRequestId = 1
-const pendingRequests = new Map<number, { resolve: (b: ArrayBuffer) => void; reject: (e: Error) => void }>()
+type SuccessResponse = Extract<ExiftoolResponse, { ok: true }>
+const pendingRequests = new Map<number, { resolve: (r: SuccessResponse) => void; reject: (e: Error) => void }>()
 
 function getExiftoolWorker(): Worker {
   if (!exiftoolWorker) {
     exiftoolWorker = new Worker(new URL('../workers/exiftool.worker.ts', import.meta.url), {
       type: 'module',
     })
-    exiftoolWorker.onmessage = (event: MessageEvent<ExiftoolWriteResponse>) => {
+    exiftoolWorker.onmessage = (event: MessageEvent<ExiftoolResponse>) => {
       const msg = event.data
       const pending = pendingRequests.get(msg.requestId)
       if (!pending) return
       pendingRequests.delete(msg.requestId)
-      if (msg.ok) pending.resolve(msg.bytes)
+      if (msg.ok) pending.resolve(msg)
       else pending.reject(new Error(msg.error))
     }
     exiftoolWorker.onerror = (e) => {
@@ -50,16 +51,31 @@ function getExiftoolWorker(): Worker {
   return exiftoolWorker
 }
 
-function exiftoolWriteGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Promise<ArrayBuffer> {
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+function exiftoolRequest(
+  request: DistributiveOmit<ExiftoolRequest, 'requestId'>,
+  transfer: Transferable[]
+): Promise<SuccessResponse> {
   const requestId = nextRequestId++
   const worker = getExiftoolWorker()
-  return new Promise<ArrayBuffer>((resolve, reject) => {
+  return new Promise<SuccessResponse>((resolve, reject) => {
     pendingRequests.set(requestId, { resolve, reject })
-    worker.postMessage(
-      { type: 'write-gps', requestId, fileName, bytes, gps } satisfies ExiftoolWriteRequest,
-      [bytes]
-    )
+    worker.postMessage({ ...request, requestId } as ExiftoolRequest, transfer)
   })
+}
+
+async function exiftoolWriteGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Promise<ArrayBuffer> {
+  const result = await exiftoolRequest({ type: 'write-gps', fileName, bytes, gps }, [bytes])
+  if (!('bytes' in result)) throw new Error('Unexpected worker response')
+  return result.bytes
+}
+
+/** Raw ExifTool tag dump for the diagnostics dialog. */
+export async function exiftoolInspect(fileName: string, bytes: ArrayBuffer): Promise<string> {
+  const result = await exiftoolRequest({ type: 'inspect', fileName, bytes }, [bytes])
+  if (!('text' in result)) throw new Error('Unexpected worker response')
+  return result.text
 }
 
 async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {

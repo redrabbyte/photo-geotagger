@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { exiftoolInspect } from '../services/writePipeline'
 import type { AssignmentMethod } from '../domain/types'
 import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
@@ -26,6 +27,22 @@ export function Inspector() {
   const active = activePhotoId ? photos[activePhotoId] : undefined
   const activeSource = active ? sources[active.sourceId] : undefined
   const selectedCount = selectedIds.size
+  const [exifDump, setExifDump] = useState<{ fileName: string; text: string } | 'loading' | undefined>()
+
+  const showExifDetails = async () => {
+    if (!active?.fileHandle) return
+    setExifDump('loading')
+    try {
+      const file = await active.fileHandle.getFile()
+      const text = await exiftoolInspect(active.fileName, await file.arrayBuffer())
+      setExifDump({ fileName: active.fileName, text })
+    } catch (err) {
+      setExifDump({
+        fileName: active.fileName,
+        text: `ExifTool failed: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
+  }
 
   const neighbors = useMemo(() => {
     if (!active || !activeSource) return undefined
@@ -135,6 +152,14 @@ export function Inspector() {
       <p className="muted small">Drag any marker on the map to set a position manually.</p>
 
       <div className="inspector-actions">
+        {active && selectedCount === 1 && active.fileHandle && (
+          <button
+            title="Run ExifTool (WASM, ~25 MB download on first use) and show every metadata tag in this file — useful when GPS seems missing"
+            onClick={() => void showExifDetails()}
+          >
+            EXIF details (ExifTool)…
+          </button>
+        )}
         {active && selectedCount === 1 && activeSource && active.meta && (
           <button
             title="Set this source's clock offset by clicking where this photo was actually taken on a track"
@@ -151,6 +176,30 @@ export function Inspector() {
           Clear assigned position
         </button>
       </div>
+
+      {exifDump !== undefined && (
+        <div className="modal-backdrop" onClick={() => setExifDump(undefined)}>
+          <div className="modal exif-dump" onClick={(e) => e.stopPropagation()}>
+            {exifDump === 'loading' ? (
+              <>
+                <h3>Reading metadata…</h3>
+                <p className="muted small">First use downloads ExifTool (~25 MB) — this can take a moment.</p>
+              </>
+            ) : (
+              <>
+                <h3>{exifDump.fileName}</h3>
+                <p className="muted small">
+                  Every tag ExifTool finds in the file. GPS lines (if any) contain “GPS”.
+                </p>
+                <pre>{exifDump.text}</pre>
+              </>
+            )}
+            <div className="modal-actions">
+              <button onClick={() => setExifDump(undefined)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
