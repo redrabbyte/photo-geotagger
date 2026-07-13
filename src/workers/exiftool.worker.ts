@@ -11,7 +11,16 @@ import { writeMetadata, parseMetadata } from '@uswriting/exiftool'
 import zeroperlWasmUrl from '../../node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm?url'
 import type { GeoPoint } from '../domain/types'
 
-const wasmFetch = (...args: unknown[]): Promise<Response> => {
+// zeroperl detects "browser" as `typeof window/document !== 'undefined'`,
+// which is false in a Web Worker and sends it down a Node-only code path.
+// Shim both so it uses fetch() (with our custom fetch below) for the WASM.
+const workerGlobal = self as unknown as Record<string, unknown>
+if (typeof window === 'undefined') {
+  workerGlobal.window = self
+  workerGlobal.document ??= {}
+}
+
+const wasmFetch =(...args: unknown[]): Promise<Response> => {
   const [input, init] = args as [RequestInfo | URL, RequestInit | undefined]
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   if (url.endsWith('zeroperl.wasm')) return fetch(zeroperlWasmUrl, init)
