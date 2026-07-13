@@ -111,12 +111,24 @@ export function Inspector() {
                   {pos
                     ? `${formatCoord(pos.lat, true)}, ${formatCoord(pos.lon, false)}${pos.ele !== undefined ? `, ${pos.ele.toFixed(0)}m` : ''}`
                     : active.scanState === 'done'
-                      ? 'no GPS in this file'
+                      ? active.meta?.gpsEmpty
+                        ? 'GPS tags present but empty'
+                        : 'no GPS in this file'
                       : active.scanState === 'error'
                         ? 'metadata scan failed'
                         : 'scanning…'}
                 </td>
               </tr>
+              {!pos && active.scanState === 'done' && active.meta?.gpsEmpty && (
+                <tr>
+                  <td className="warn">Hint</td>
+                  <td className="warn">
+                    Android removes photo locations from files picked via the gallery view
+                    (scoped-storage redaction). Re-add the folder by navigating the file tree
+                    (☰ → device → DCIM) instead of “Images/Recent”, or load the file on desktop.
+                  </td>
+                </tr>
+              )}
               {active.scanError && (
                 <tr><td className="warn">Scan error</td><td className="warn">{active.scanError}</td></tr>
               )}

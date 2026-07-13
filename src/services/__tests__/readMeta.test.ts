@@ -39,6 +39,24 @@ describe('extractMeta', () => {
     expect(meta.originalGps!.ele).toBeCloseTo(-430, 0)
   })
 
+  it('flags empty GPS structure (Android location redaction)', async () => {
+    // GPS IFD with only a version tag and no coordinates.
+    const piexif = (await import('piexifjs')).default
+    const base = makeJpegWithExif('2026:06:01 12:34:56')
+    const dataStr = Array.from(new Uint8Array(base), (b) => String.fromCharCode(b)).join('')
+    const exifObj = piexif.load(dataStr)
+    exifObj['GPS'] = { [piexif.GPSIFD.GPSVersionID]: [2, 3, 0, 0] }
+    const out = piexif.insert(piexif.dump(exifObj), dataStr)
+    const bytes = new Uint8Array(out.length)
+    for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 0xff
+    const meta = await extractMeta(asBuffer(bytes), MTIME)
+    expect(meta.originalGps).toBeUndefined()
+    expect(meta.gpsEmpty).toBe(true)
+    // A file with no GPS structure at all is NOT flagged.
+    const clean = await extractMeta(asBuffer(makeJpegWithExif('2026:06:01 12:34:56')), MTIME)
+    expect(clean.gpsEmpty).toBeUndefined()
+  })
+
   it('falls back to file mtime without EXIF time', async () => {
     const meta = await extractMeta(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]).buffer as ArrayBuffer, MTIME)
     expect(meta.timeSource).toBe('file')

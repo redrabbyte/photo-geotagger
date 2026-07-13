@@ -35,6 +35,11 @@ export interface PhotoMeta {
   tzOffsetMin?: number
   /** GPS coordinates already present in the file. */
   originalGps?: GeoPoint
+  /**
+   * GPS tag structure exists but holds no coordinates — the signature of
+   * Android's scoped-storage location redaction (or a metadata stripper).
+   */
+  gpsEmpty?: boolean
   cameraModel?: string
   width?: number
   height?: number

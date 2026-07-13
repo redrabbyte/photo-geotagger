@@ -72,6 +72,8 @@ export async function extractMeta(input: File | ArrayBuffer, lastModified: numbe
       ele = ref === 1 || ref === '1' ? -alt : alt
     }
     meta.originalGps = { lat, lon, ele }
+  } else if (exif && Object.keys(exif).some((k) => k.startsWith('GPS'))) {
+    meta.gpsEmpty = true
   }
   if (typeof exif?.Model === 'string') meta.cameraModel = exif.Model
   if (typeof exif?.ExifImageWidth === 'number') meta.width = exif.ExifImageWidth
