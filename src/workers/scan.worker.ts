@@ -14,7 +14,7 @@ export interface ScanRequest {
 }
 
 export type ScanResponse =
-  | { type: 'meta'; id: string; meta: PhotoMeta }
+  | { type: 'meta'; id: string; meta: PhotoMeta; sizeBytes: number; lastModified: number }
   | { type: 'thumb'; id: string; blob: Blob }
   | { type: 'thumb-failed'; id: string }
   | { type: 'error'; id: string; message: string }
@@ -135,7 +135,13 @@ self.onmessage = async (event: MessageEvent<ScanRequest>) => {
     try {
       const file = await job.handle.getFile()
       const meta = await extractMeta(file)
-      postMessage({ type: 'meta', id: job.id, meta } satisfies ScanResponse)
+      postMessage({
+        type: 'meta',
+        id: job.id,
+        meta,
+        sizeBytes: file.size,
+        lastModified: file.lastModified,
+      } satisfies ScanResponse)
       const thumb = await extractThumb(file, job.kind)
       if (thumb) {
         postMessage({ type: 'thumb', id: job.id, blob: thumb } satisfies ScanResponse)

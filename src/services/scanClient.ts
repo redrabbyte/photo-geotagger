@@ -2,7 +2,7 @@ import type { PhotoMeta } from '../domain/types'
 import type { ScanJob, ScanRequest, ScanResponse } from '../workers/scan.worker'
 
 export interface ScanCallbacks {
-  onMeta(id: string, meta: PhotoMeta): void
+  onMeta(id: string, meta: PhotoMeta, sizeBytes: number, lastModified: number): void
   onThumb(id: string, url: string): void
   onThumbFailed(id: string): void
   onError(id: string, message: string): void
@@ -48,7 +48,7 @@ export class ScanClient {
   private handleMessage(worker: Worker, msg: ScanResponse): void {
     switch (msg.type) {
       case 'meta':
-        this.callbacks.onMeta(msg.id, msg.meta)
+        this.callbacks.onMeta(msg.id, msg.meta, msg.sizeBytes, msg.lastModified)
         break
       case 'thumb':
         this.callbacks.onThumb(msg.id, URL.createObjectURL(msg.blob))

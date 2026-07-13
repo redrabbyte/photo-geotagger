@@ -40,11 +40,14 @@ export async function clearPersistedSources(): Promise<void> {
   }
 }
 
-/** Re-request readwrite permission for a restored handle. Needs a user gesture. */
-export async function ensurePermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
+/** (Re-)request permission for a handle. Needs a user gesture. */
+export async function ensurePermission(
+  handle: FileSystemDirectoryHandle,
+  mode: 'read' | 'readwrite' = 'read'
+): Promise<boolean> {
   try {
-    if ((await handle.queryPermission({ mode: 'readwrite' })) === 'granted') return true
-    return (await handle.requestPermission({ mode: 'readwrite' })) === 'granted'
+    if ((await handle.queryPermission({ mode })) === 'granted') return true
+    return (await handle.requestPermission({ mode })) === 'granted'
   } catch {
     return false
   }

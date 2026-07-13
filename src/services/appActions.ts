@@ -31,7 +31,8 @@ function queueUpdate(update: ScanUpdate): void {
 function getScanClient(): ScanClient {
   if (!scanClient) {
     scanClient = new ScanClient({
-      onMeta: (id, meta) => queueUpdate({ id, kind: 'meta', meta }),
+      onMeta: (id, meta, sizeBytes, lastModified) =>
+        queueUpdate({ id, kind: 'meta', meta, sizeBytes, lastModified }),
       onThumb: (id, url) => queueUpdate({ id, kind: 'thumb', url }),
       onThumbFailed: (id) => queueUpdate({ id, kind: 'thumb-failed' }),
       onError: (id, message) => queueUpdate({ id, kind: 'error', message }),
@@ -65,17 +66,11 @@ async function ingestSource(source: Source): Promise<void> {
   if (!source.dirHandle) return
   const scan = await enumerateFolder(source.dirHandle)
 
+  // Size/mtime are filled in by the scan worker — reading every file here
+  // would block the UI on large folders before anything shows up.
   const photos: Photo[] = []
   for (const f of scan.photos) {
-    const file = await f.handle.getFile().catch(() => undefined)
-    const record = makePhotoRecord(
-      source.id,
-      f.handle,
-      f.relativePath,
-      f.name,
-      file?.size ?? 0,
-      file?.lastModified ?? 0
-    )
+    const record = makePhotoRecord(source.id, f.handle, f.relativePath, f.name, 0, 0)
     if (record) photos.push(record)
   }
   store.addSource(source, photos)
@@ -112,9 +107,14 @@ export async function addSourceFlow(): Promise<void> {
   }
   let dirHandle: FileSystemDirectoryHandle
   try {
-    dirHandle = await showDirectoryPicker({ mode: 'readwrite', id: 'photo-source' })
-  } catch {
-    return // user cancelled
+    // Read-only: avoids Chrome's extra "let site make changes?" prompt, which
+    // aborts the picker when declined. Write permission is requested later,
+    // when the user actually clicks "Write GPS".
+    dirHandle = await showDirectoryPicker({ mode: 'read', id: 'photo-source' })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return // user cancelled
+    store.notify('error', `Could not open folder: ${err instanceof Error ? err.message : String(err)}`)
+    return
   }
   const existing = Object.keys(store.sources).length
   const source: Source = {
@@ -125,7 +125,13 @@ export async function addSourceFlow(): Promise<void> {
     assumedTzOffsetMin: -new Date().getTimezoneOffset(),
     dirHandle,
   }
-  await ingestSource(source)
+  store.notify('info', `Reading "${source.name}"…`)
+  try {
+    await ingestSource(source)
+  } catch (err) {
+    store.notify('error', `Failed to read folder: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
   await persistCurrentSources()
 }
 
@@ -142,7 +148,7 @@ export async function listRestorableSources(): Promise<RestorableSource[]> {
     name: p.name,
     restore: async () => {
       const store = useStore.getState()
-      if (!(await ensurePermission(p.dirHandle))) {
+      if (!(await ensurePermission(p.dirHandle, 'read'))) {
         store.notify('error', `Permission denied for "${p.name}" — pick the folder again instead.`)
         return
       }
@@ -154,7 +160,11 @@ export async function listRestorableSources(): Promise<RestorableSource[]> {
         assumedTzOffsetMin: p.assumedTzOffsetMin,
         dirHandle: p.dirHandle,
       }
-      await ingestSource(source)
+      try {
+        await ingestSource(source)
+      } catch (err) {
+        store.notify('error', `Failed to read folder: ${err instanceof Error ? err.message : String(err)}`)
+      }
     },
   }))
 }
@@ -195,6 +205,16 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   if (targets.length === 0) {
     store.notify('info', 'Nothing to write — no photos with unsaved positions.')
     return
+  }
+
+  // Folders are opened read-only; escalate to readwrite now (user gesture).
+  for (const sourceId of new Set(targets.map((p) => p.sourceId))) {
+    const source = store.sources[sourceId]
+    if (!source?.dirHandle) continue
+    if (!(await ensurePermission(source.dirHandle, 'readwrite'))) {
+      store.notify('error', `Write permission denied for "${source.name}" — nothing was written.`)
+      return
+    }
   }
 
   store.markWriting(targets.map((p) => p.id))
