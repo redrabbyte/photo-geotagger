@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import exifr from 'exifr'
 import type { PhotoKind, PhotoMeta } from '../domain/types'
+import { extractMeta } from '../services/exif/readMeta'
 
 export interface ScanJob {
   id: string
@@ -19,80 +20,6 @@ export type ScanResponse =
   | { type: 'thumb-failed'; id: string }
   | { type: 'error'; id: string; message: string }
   | { type: 'batch-done' }
-
-const EXIFR_OPTIONS: NonNullable<Parameters<typeof exifr.parse>[1]> = {
-  tiff: true,
-  exif: true,
-  gps: true,
-  translateValues: true,
-  reviveValues: true,
-  pick: [
-    'DateTimeOriginal',
-    'CreateDate',
-    'OffsetTimeOriginal',
-    'OffsetTime',
-    'Model',
-    'ExifImageWidth',
-    'ExifImageHeight',
-    'GPSLatitude',
-    'GPSLongitude',
-    'GPSAltitude',
-    'GPSAltitudeRef',
-    'latitude',
-    'longitude',
-  ],
-}
-
-/**
- * exifr revives EXIF datetimes as Date objects in the MACHINE's local zone.
- * Convert back to wall-clock-as-UTC milliseconds so timezone handling stays
- * explicit in the domain layer.
- */
-function wallClockMs(d: Date): number {
-  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds())
-}
-
-function parseTzOffsetMin(offset: unknown): number | undefined {
-  if (typeof offset !== 'string') return undefined
-  const m = offset.match(/^([+-])(\d{2}):(\d{2})$/)
-  if (!m) return undefined
-  const sign = m[1] === '-' ? -1 : 1
-  return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10))
-}
-
-async function extractMeta(file: File): Promise<PhotoMeta> {
-  let exif: Record<string, unknown> | undefined
-  try {
-    exif = await exifr.parse(file, EXIFR_OPTIONS)
-  } catch {
-    exif = undefined
-  }
-
-  const dto = exif?.DateTimeOriginal ?? exif?.CreateDate
-  const meta: PhotoMeta = dto instanceof Date
-    ? { captureLocalMs: wallClockMs(dto), timeSource: 'exif' }
-    : { captureLocalMs: file.lastModified, timeSource: 'file', tzOffsetMin: 0 }
-
-  if (meta.timeSource === 'exif') {
-    meta.tzOffsetMin = parseTzOffsetMin(exif?.OffsetTimeOriginal ?? exif?.OffsetTime)
-  }
-
-  const lat = exif?.latitude
-  const lon = exif?.longitude
-  if (typeof lat === 'number' && typeof lon === 'number' && Number.isFinite(lat) && Number.isFinite(lon)) {
-    let ele: number | undefined
-    const alt = exif?.GPSAltitude
-    if (typeof alt === 'number' && Number.isFinite(alt)) {
-      const ref = exif?.GPSAltitudeRef
-      ele = ref === 1 || ref === '1' ? -alt : alt
-    }
-    meta.originalGps = { lat, lon, ele }
-  }
-  if (typeof exif?.Model === 'string') meta.cameraModel = exif.Model
-  if (typeof exif?.ExifImageWidth === 'number') meta.width = exif.ExifImageWidth
-  if (typeof exif?.ExifImageHeight === 'number') meta.height = exif.ExifImageHeight
-  return meta
-}
 
 const THUMB_SIZE = 320
 
@@ -134,7 +61,7 @@ self.onmessage = async (event: MessageEvent<ScanRequest>) => {
   for (const job of jobs) {
     try {
       const file = await job.handle.getFile()
-      const meta = await extractMeta(file)
+      const meta = await extractMeta(file, file.lastModified)
       postMessage({
         type: 'meta',
         id: job.id,
