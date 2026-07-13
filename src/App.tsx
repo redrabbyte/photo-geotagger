@@ -13,8 +13,9 @@ export default function App() {
     <div className="app">
       {!fsaSupported() && (
         <div className="browser-warning">
-          This app needs the File System Access API to read and edit local photos. Please use
-          Chrome or Edge — in this browser, folders cannot be opened or written.
+          This app needs the File System Access API to read and edit local photos, which only
+          desktop Chrome or Edge provide. On this browser (including phones/tablets), folders
+          cannot be opened or written.
         </div>
       )}
       <WriteBar />
