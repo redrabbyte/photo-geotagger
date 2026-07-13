@@ -4,7 +4,19 @@
 // the main thread. Loaded lazily — this worker is only created when the user
 // switches to ExifTool write mode.
 import { writeMetadata, parseMetadata } from '@uswriting/exiftool'
+// Vite emits the 25 MB WASM as a hashed asset; zeroperl's own relative
+// "./zeroperl.wasm" URL would 404, so every request for it is redirected
+// to the emitted asset via the custom fetch below.
+// Relative path because the package's `exports` field forbids deep imports.
+import zeroperlWasmUrl from '../../node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm?url'
 import type { GeoPoint } from '../domain/types'
+
+const wasmFetch = (...args: unknown[]): Promise<Response> => {
+  const [input, init] = args as [RequestInfo | URL, RequestInit | undefined]
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+  if (url.endsWith('zeroperl.wasm')) return fetch(zeroperlWasmUrl, init)
+  return fetch(input, init)
+}
 
 export interface ExiftoolWriteRequest {
   type: 'write-gps'
@@ -32,16 +44,20 @@ async function writeGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Pr
     tags.GPSAltitudeRef = gps.ele < 0 ? 1 : 0
   }
 
-  const result = await writeMetadata(input, tags)
+  const result = await writeMetadata(input, tags, { fetch: wasmFetch })
   if (!result.success) {
     throw new Error(result.error || `exiftool failed with exit code ${result.exitCode}`)
   }
   const outBytes: Uint8Array = result.data instanceof Uint8Array ? result.data : new Uint8Array(result.data as ArrayBuffer)
 
   // Verify with an independent read before the caller may overwrite anything.
-  const verify = await parseMetadata(
+  const verify = await parseMetadata<Array<Record<string, number>>>(
     { name: fileName, data: outBytes },
-    { args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude'], transform: (s) => JSON.parse(s) as Array<Record<string, number>> }
+    {
+      args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude'],
+      transform: (s) => JSON.parse(s) as Array<Record<string, number>>,
+      fetch: wasmFetch,
+    }
   )
   if (!verify.success) throw new Error(`verification read failed: ${verify.error}`)
   const entry = verify.data[0] ?? {}

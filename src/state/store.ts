@@ -51,6 +51,10 @@ export interface AppState {
   scanning: boolean
   writeProgress?: { done: number; total: number; current: string }
   notices: Notice[]
+  /** Manual drags snap to the nearest track when enabled. */
+  snapToTrack: boolean
+  /** Active clock calibration: next map click sets the source's offset. */
+  calibrate?: { sourceId: SourceId; photoBaseUtcMs: number; photoName: string }
 
   addSource(source: Source, photos: Photo[]): void
   removeSource(id: SourceId): void
@@ -69,6 +73,9 @@ export interface AppState {
   markWriteResult(photoId: string, ok: boolean, target?: 'exif' | 'sidecar', error?: string): void
   setWriteProgress(progress?: { done: number; total: number; current: string }): void
   setSettings(patch: Partial<AppSettings>): void
+  setSnapToTrack(snap: boolean): void
+  startCalibrate(sourceId: SourceId, photoBaseUtcMs: number, photoName: string): void
+  cancelCalibrate(): void
   notify(kind: Notice['kind'], text: string): void
   dismissNotice(id: number): void
 }
@@ -93,6 +100,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
   scanning: false,
   notices: [],
+  snapToTrack: false,
 
   addSource(source, photos) {
     set((s) => {
@@ -285,6 +293,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   setSettings(patch) {
     set((s) => ({ settings: { ...s.settings, ...patch } }))
+  },
+
+  setSnapToTrack(snapToTrack) {
+    set({ snapToTrack })
+  },
+
+  startCalibrate(sourceId, photoBaseUtcMs, photoName) {
+    set({ calibrate: { sourceId, photoBaseUtcMs, photoName } })
+  },
+
+  cancelCalibrate() {
+    set({ calibrate: undefined })
   },
 
   notify(kind, text) {

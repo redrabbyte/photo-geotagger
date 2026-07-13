@@ -76,7 +76,7 @@ export async function validateJpegOutput(bytes: Uint8Array, input: JpegValidatio
     throw new Error('Output is implausibly small — refusing to overwrite original')
   }
   const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-  const parsed = await exifr.parse(buf, { gps: true, exif: true, pick: ['DateTimeOriginal', 'latitude', 'longitude'] })
+  const parsed = await exifr.parse(buf, { gps: true, exif: true })
   const lat = parsed?.latitude
   const lon = parsed?.longitude
   if (typeof lat !== 'number' || typeof lon !== 'number') {
