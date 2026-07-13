@@ -238,14 +238,24 @@ export function MapView() {
         }
       })
 
-      // Drag a photo marker to set a manual position (optionally snapped to track).
+      // Drag a photo marker to set a manual position (optionally snapped to
+      // track). Mouse and touch share the same handlers — on touch devices
+      // the map would otherwise pan instead of moving the marker.
+      type PointerEv = maplibregl.MapMouseEvent | maplibregl.MapTouchEvent
+      type LayerPointerEv = maplibregl.MapLayerMouseEvent | maplibregl.MapLayerTouchEvent
+
+      const isMultiTouch = (e: PointerEv) =>
+        'touches' in e.originalEvent && e.originalEvent.touches.length > 1
+
       let dragging: { id: string } | undefined
+      let lastDragLngLat: GeoPoint | undefined
       const dragPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 14 })
 
-      const onMove = (e: maplibregl.MapMouseEvent) => {
-        if (!dragging) return
+      const onMove = (e: PointerEv) => {
+        if (!dragging || isMultiTouch(e)) return
         const snap = useStore.getState().snapToTrack
         let pos: GeoPoint = { lat: e.lngLat.lat, lon: e.lngLat.lng }
+        lastDragLngLat = pos
         let popupHtml = ''
         if (snap) {
           const proj = projectAcrossTracks(Object.values(stateRef.current.tracks), pos)
@@ -275,16 +285,22 @@ export function MapView() {
         refreshRef.current()
       }
 
-      const onUp = (e: maplibregl.MapMouseEvent) => {
+      const onUp = (e: PointerEv) => {
         if (!dragging) return
         const id = dragging.id
         dragging = undefined
         map.off('mousemove', onMove)
+        map.off('touchmove', onMove)
+        map.off('mouseup', onUp)
+        map.off('touchend', onUp)
+        map.off('touchcancel', onUp)
         dragPopup.remove()
         map.dragPan.enable()
         const store = useStore.getState()
         const snap = store.snapToTrack
-        let pos: GeoPoint = { lat: e.lngLat.lat, lon: e.lngLat.lng }
+        let pos: GeoPoint = e.lngLat
+          ? { lat: e.lngLat.lat, lon: e.lngLat.lng }
+          : (lastDragLngLat ?? { lat: 0, lon: 0 })
         let trackId: string | undefined
         if (snap) {
           const proj = projectAcrossTracks(Object.values(stateRef.current.tracks), pos)
@@ -297,46 +313,65 @@ export function MapView() {
         store.setManualPosition(id, pos, trackId)
       }
 
-      map.on('mousedown', 'photos-circle', (e) => {
+      const startPhotoDrag = (e: LayerPointerEv) => {
         if (stateRef.current.calibrate || stateRef.current.draft) return
+        if (isMultiTouch(e)) return
         const feature = e.features?.[0]
         const id = feature?.properties?.id as string | undefined
         if (!id) return
         e.preventDefault()
         dragging = { id }
+        lastDragLngLat = { lat: e.lngLat.lat, lon: e.lngLat.lng }
         map.dragPan.disable()
         map.on('mousemove', onMove)
-        map.once('mouseup', onUp)
-      })
+        map.on('touchmove', onMove)
+        map.on('mouseup', onUp)
+        map.on('touchend', onUp)
+        map.on('touchcancel', onUp)
+      }
+      map.on('mousedown', 'photos-circle', startPhotoDrag)
+      map.on('touchstart', 'photos-circle', startPhotoDrag)
 
       // --- draft editing: drag points; drag the line to insert a point ---
       let draggingDraftIndex: number | undefined
 
-      const onDraftMove = (e: maplibregl.MapMouseEvent) => {
-        if (draggingDraftIndex === undefined) return
+      const onDraftMove = (e: PointerEv) => {
+        if (draggingDraftIndex === undefined || isMultiTouch(e)) return
         useStore.getState().moveDraftPointAt(draggingDraftIndex, { lat: e.lngLat.lat, lon: e.lngLat.lng })
       }
       const onDraftUp = () => {
         draggingDraftIndex = undefined
         map.off('mousemove', onDraftMove)
+        map.off('touchmove', onDraftMove)
+        map.off('mouseup', onDraftUp)
+        map.off('touchend', onDraftUp)
+        map.off('touchcancel', onDraftUp)
         map.dragPan.enable()
       }
+      const beginDraftDrag = (index: number) => {
+        draggingDraftIndex = index
+        map.dragPan.disable()
+        map.on('mousemove', onDraftMove)
+        map.on('touchmove', onDraftMove)
+        map.on('mouseup', onDraftUp)
+        map.on('touchend', onDraftUp)
+        map.on('touchcancel', onDraftUp)
+      }
 
-      map.on('mousedown', 'draft-points', (e) => {
-        if (!stateRef.current.draft) return
+      const startDraftPointDrag = (e: LayerPointerEv) => {
+        if (!stateRef.current.draft || isMultiTouch(e)) return
         const idx = e.features?.[0]?.properties?.index
         if (typeof idx !== 'number') return
         e.preventDefault()
-        draggingDraftIndex = idx
         useStore.getState().selectDraftPoint(idx)
-        map.dragPan.disable()
-        map.on('mousemove', onDraftMove)
-        map.once('mouseup', onDraftUp)
-      })
+        beginDraftDrag(idx)
+      }
+      map.on('mousedown', 'draft-points', startDraftPointDrag)
+      map.on('touchstart', 'draft-points', startDraftPointDrag)
 
-      map.on('mousedown', 'draft-line', (e) => {
+      const startDraftLineDrag = (e: LayerPointerEv) => {
         const draft = stateRef.current.draft
-        if (!draft) return
+        if (!draft || isMultiTouch(e)) return
         // A point on top of the line wins — its own handler runs instead.
         if (map.queryRenderedFeatures(e.point, { layers: ['draft-points'] }).length > 0) return
         const proj = projectOntoDraft(draft.points, { lat: e.lngLat.lat, lon: e.lngLat.lng })
@@ -344,11 +379,10 @@ export function MapView() {
         e.preventDefault()
         const newIndex = useStore.getState().insertDraftAutoAt(proj.segmentIndex, proj.point)
         if (newIndex < 0) return
-        draggingDraftIndex = newIndex
-        map.dragPan.disable()
-        map.on('mousemove', onDraftMove)
-        map.once('mouseup', onDraftUp)
-      })
+        beginDraftDrag(newIndex)
+      }
+      map.on('mousedown', 'draft-line', startDraftLineDrag)
+      map.on('touchstart', 'draft-line', startDraftLineDrag)
 
       map.on('mouseenter', 'draft-points', () => {
         canvas.style.cursor = 'move'

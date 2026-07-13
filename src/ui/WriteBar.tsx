@@ -24,7 +24,12 @@ export function WriteBar() {
 
   return (
     <div className="write-bar">
-      <span className="app-title">Photo Geotagger</span>
+      <span className="app-title">
+        Photo Geotagger
+        <span className="build-time" title="Build time (UTC)">
+          {__BUILD_TIME__.slice(0, 16).replace('T', ' ')}
+        </span>
+      </span>
 
       <span className="write-mode" title="How GPS is written back to your files">
         <label>Write mode</label>
