@@ -203,9 +203,7 @@ export async function addClassicFolderFlow(files: FileList | File[]): Promise<vo
   if (list.length === 0) return
 
   const firstRel = (list[0] as File & { webkitRelativePath?: string }).webkitRelativePath
-  const folderName =
-    firstRel?.split('/')[0] ||
-    (list.length === 1 ? list[0].name : `${list[0].name} +${list.length - 1}`)
+  const folderName = firstRel?.split('/')[0] || 'Classic folder'
   const existing = Object.keys(store.sources).length
   const source: Source = {
     id: nextSourceId(),
