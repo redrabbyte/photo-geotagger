@@ -3,6 +3,7 @@
 // ~25 MB of WASM and each invocation takes noticeable CPU, so it stays off
 // the main thread. Loaded lazily — this worker is only created when the user
 // switches to ExifTool write mode.
+import exifr from 'exifr'
 import { writeMetadata, parseMetadata } from '@uswriting/exiftool'
 // Vite emits the 25 MB WASM as a hashed asset; zeroperl's own relative
 // "./zeroperl.wasm" URL would 404, so every request for it is redirected
@@ -20,10 +21,19 @@ if (typeof window === 'undefined') {
   workerGlobal.document ??= {}
 }
 
-const wasmFetch =(...args: unknown[]): Promise<Response> => {
+// zeroperl only holds the WASM bytes in a WeakRef; under the memory pressure
+// of multi-MB photos it re-fetches 25 MB on every interpreter re-boot. Cache
+// the bytes strongly so re-boots skip the fetch.
+let wasmBytesCache: ArrayBuffer | undefined
+const wasmFetch = async (...args: unknown[]): Promise<Response> => {
   const [input, init] = args as [RequestInfo | URL, RequestInit | undefined]
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-  if (url.endsWith('zeroperl.wasm')) return fetch(zeroperlWasmUrl, init)
+  if (url.endsWith('zeroperl.wasm')) {
+    if (!wasmBytesCache) {
+      wasmBytesCache = await (await fetch(zeroperlWasmUrl, init)).arrayBuffer()
+    }
+    return new Response(wasmBytesCache, { headers: { 'Content-Type': 'application/wasm' } })
+  }
   return fetch(input, init)
 }
 
@@ -85,6 +95,56 @@ async function writeGps(
   const outBytes: Uint8Array = result.data instanceof Uint8Array ? result.data : new Uint8Array(result.data as ArrayBuffer)
 
   // Verify with an independent read before the caller may overwrite anything.
+  // exifr does this in milliseconds; a second full ExifTool run (Perl boot +
+  // VFS copies) used to double the per-photo cost. ExifTool remains the
+  // fallback for formats exifr cannot parse.
+  await verifyOutput(fileName, outBytes, gps, timeCorrection)
+  if (outBytes.length < bytes.byteLength * 0.5) {
+    throw new Error('Rewritten file is implausibly small — refusing to overwrite original')
+  }
+  return outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength) as ArrayBuffer
+}
+
+function exifDateTimeOf(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}:${p(d.getMonth() + 1)}:${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+async function verifyOutput(
+  fileName: string,
+  outBytes: Uint8Array,
+  gps: GeoPoint | undefined,
+  timeCorrection?: WorkerTimeCorrection
+): Promise<void> {
+  let parsed: Record<string, unknown> | undefined
+  try {
+    const buf = outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength)
+    parsed = await exifr.parse(buf, { tiff: true, exif: true, gps: true })
+  } catch {
+    parsed = undefined
+  }
+
+  if (parsed) {
+    if (gps) {
+      const lat = parsed.latitude
+      const lon = parsed.longitude
+      if (typeof lat !== 'number' || typeof lon !== 'number') {
+        throw new Error('GPS missing from rewritten file — refusing to overwrite original')
+      }
+      if (Math.abs(lat - gps.lat) > 1e-4 || Math.abs(lon - gps.lon) > 1e-4) {
+        throw new Error('GPS in rewritten file does not match assigned position')
+      }
+    }
+    if (timeCorrection) {
+      const dto = parsed.DateTimeOriginal
+      if (!(dto instanceof Date) || exifDateTimeOf(dto) !== timeCorrection.exifDateTime) {
+        throw new Error('Corrected capture time missing from rewritten file — refusing to overwrite original')
+      }
+    }
+    return
+  }
+
+  // exifr could not parse this format — fall back to a full ExifTool read.
   const verify = await parseMetadata<Array<Record<string, unknown>>>(
     { name: fileName, data: outBytes },
     {
@@ -108,10 +168,6 @@ async function writeGps(
   if (timeCorrection && entry.DateTimeOriginal !== timeCorrection.exifDateTime) {
     throw new Error('Corrected capture time missing from rewritten file — refusing to overwrite original')
   }
-  if (outBytes.length < bytes.byteLength * 0.5) {
-    throw new Error('Rewritten file is implausibly small — refusing to overwrite original')
-  }
-  return outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength) as ArrayBuffer
 }
 
 /**
