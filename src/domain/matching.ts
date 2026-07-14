@@ -12,8 +12,6 @@ import { findNeighbors } from './trackIndex'
 import { lerpPoint, roundGps } from './gpsMath'
 
 export interface MatchSettings {
-  /** Reject matches farther than this from any trackpoint. */
-  maxMatchDeltaMs: number
   /** Never interpolate across a larger time gap between trackpoints. */
   maxGapMs: number
   /** Max time distance for inheriting from an adjacent geotagged photo. */
@@ -21,7 +19,6 @@ export interface MatchSettings {
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
-  maxMatchDeltaMs: 300_000,
   maxGapMs: 300_000,
   maxInheritGapMs: 600_000,
 }
@@ -29,10 +26,6 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
 export type MatchResult =
   | { ok: true; assignment: PositionAssignment }
   | { ok: false; reason: 'no-time' | 'no-match' | 'no-neighbor' }
-
-function within(refPoint: TrackPointRef | undefined, maxMs: number): boolean {
-  return refPoint !== undefined && Math.abs(refPoint.deltaMs) <= maxMs
-}
 
 /**
  * Compute a track-based assignment for one photo.
@@ -48,9 +41,11 @@ export function matchToTracks(
   const t = effectiveUtcMs(photo, source)
   if (t === undefined) return { ok: false, reason: 'no-time' }
 
+  // No time cutoff: a photo taken hours outside the track still snaps to the
+  // nearest/previous/next trackpoint — the delta is shown in the inspector.
   const pair = findNeighbors(tracks, t)
-  const before = within(pair.before, settings.maxMatchDeltaMs) ? pair.before : undefined
-  const after = within(pair.after, settings.maxMatchDeltaMs) ? pair.after : undefined
+  const before = pair.before
+  const after = pair.after
   if (!before && !after) return { ok: false, reason: 'no-match' }
 
   const base: Omit<PositionAssignment, 'point' | 'method'> = {

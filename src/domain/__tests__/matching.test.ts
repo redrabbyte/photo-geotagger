@@ -135,10 +135,26 @@ describe('matchToTracks', () => {
     expect(r.assignment.point.lat).toBe(50)
   })
 
-  it('rejects photos far outside track coverage', () => {
+  it('photos far outside track coverage still snap to the nearest point', () => {
+    // 50 minutes after the track ends: closest/before return the last point.
     const r = matchToTracks(makePhoto(T0 + 60 * MIN), src, [track], 'closest')
-    expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.reason).toBe('no-match')
+    if (!r.ok) throw new Error('expected match')
+    expect(r.assignment.point.lat).toBeCloseTo(50.01, 9)
+    const rb = matchToTracks(makePhoto(T0 + 60 * MIN), src, [track], 'before')
+    if (!rb.ok) throw new Error('expected match')
+    expect(rb.assignment.point.lat).toBeCloseTo(50.01, 9)
+    // ...while 'after' has no trackpoint to offer.
+    const ra = matchToTracks(makePhoto(T0 + 60 * MIN), src, [track], 'after')
+    expect(!ra.ok && ra.reason).toBe('no-neighbor')
+    // Before the track starts, closest returns the first point.
+    const re = matchToTracks(makePhoto(T0 - 60 * MIN), src, [track], 'closest')
+    if (!re.ok) throw new Error('expected match')
+    expect(re.assignment.point.lat).toBe(50)
+    // Interpolation outside coverage degrades to closest and is flagged.
+    const ri = matchToTracks(makePhoto(T0 + 60 * MIN), src, [track], 'interpolated')
+    if (!ri.ok) throw new Error('expected degraded match')
+    expect(ri.assignment.method).toBe('closest')
+    expect(ri.assignment.degraded).toBe(true)
   })
 
   it('clock offset shifts the match', () => {
