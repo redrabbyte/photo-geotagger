@@ -116,6 +116,41 @@ export function deleteDraftPoint(points: DraftPoint[], index: number): DraftPoin
   return reinterpolateTimes(pts)
 }
 
+/**
+ * Remove every point before or after `index`. The point at `index` survives
+ * and becomes a (manual) endpoint of the shortened track.
+ */
+export function trimDraftPoints(
+  points: DraftPoint[],
+  index: number,
+  direction: 'before' | 'after'
+): DraftPoint[] {
+  if (index < 0 || index >= points.length) return points
+  const kept = direction === 'before' ? points.slice(index) : points.slice(0, index + 1)
+  if (kept.length === points.length || kept.length === 0) return points
+  const out = kept.map((p) => ({ ...p }))
+  out[0].manual = true
+  out[out.length - 1].manual = true
+  return out
+}
+
+/**
+ * Append another track's points (as manual anchors, keeping their recorded
+ * times). If the appended track would start before the current end, it is
+ * shifted forward to `minGapMs` after the end so the result stays chronological.
+ */
+export function appendTrackPoints(
+  points: DraftPoint[],
+  other: Array<{ lat: number; lon: number; t: number }>,
+  minGapMs = 1000
+): { points: DraftPoint[]; shiftedByMs: number } {
+  if (other.length === 0) return { points, shiftedByMs: 0 }
+  const end = points.length > 0 ? points[points.length - 1].t : Number.NEGATIVE_INFINITY
+  const shiftedByMs = other[0].t <= end ? end + minGapMs - other[0].t : 0
+  const appended = other.map((p) => ({ lat: p.lat, lon: p.lon, t: p.t + shiftedByMs, manual: true }))
+  return { points: [...points.map((p) => ({ ...p })), ...appended], shiftedByMs }
+}
+
 /** Times must be non-decreasing for a valid GPX track. */
 export function validateDraftTimes(points: DraftPoint[]): string | undefined {
   for (let i = 1; i < points.length; i++) {

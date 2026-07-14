@@ -18,8 +18,10 @@ import {
   type MatchSettings,
 } from '../domain/matching'
 import {
+  appendTrackPoints,
   deleteDraftPoint,
   insertAutoPoint,
+  trimDraftPoints,
   moveDraftPoint,
   reinterpolateTimes,
   setDraftPointTime,
@@ -121,6 +123,10 @@ export interface AppState {
    * `base` allows drag gestures to stretch from a snapshot.
    */
   stretchDraft(anchorIndex: number, index: number, newT: number, base?: DraftPoint[]): void
+  /** Delete every draft point before/after the given index. Returns removed count. */
+  trimDraftAt(index: number, direction: 'before' | 'after'): number
+  /** Append another track's points to the draft. Returns info or an error string. */
+  appendTrackToDraft(trackId: string): { added: number; shiftedByMs: number } | string
   copyTrack(trackId: string): void
   cancelDraft(): void
   /** Returns an error message, or undefined on success. */
@@ -471,6 +477,37 @@ export const useStore = create<AppState>((set, get) => ({
       const marked = points.map((p, i) => (i === index ? { ...p, manual: true } : p))
       return { draft: { ...s.draft, points: marked } }
     })
+  },
+
+  trimDraftAt(index, direction) {
+    const s = get()
+    if (!s.draft) return 0
+    const points = trimDraftPoints(s.draft.points, index, direction)
+    if (points === s.draft.points) return 0
+    const removed = s.draft.points.length - points.length
+    const offset = direction === 'before' ? index : 0
+    const adjust = (i?: number) => {
+      if (i === undefined) return undefined
+      const ni = i - offset
+      return ni >= 0 && ni < points.length ? ni : undefined
+    }
+    set({
+      draft: { ...s.draft, points },
+      draftSelectedIndex: adjust(s.draftSelectedIndex),
+      draftAnchorIndex: adjust(s.draftAnchorIndex),
+    })
+    return removed
+  },
+
+  appendTrackToDraft(trackId) {
+    const s = get()
+    if (!s.draft) return 'No track is being edited'
+    const track = s.tracks[trackId]
+    if (!track) return 'Track not found'
+    if (s.draft.trackId === trackId) return 'Cannot append a track to itself'
+    const { points, shiftedByMs } = appendTrackPoints(s.draft.points, track.points)
+    set({ draft: { ...s.draft, points } })
+    return { added: track.points.length, shiftedByMs }
   },
 
   copyTrack(trackId) {

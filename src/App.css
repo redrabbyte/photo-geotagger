@@ -548,6 +548,14 @@ select {
   color: var(--text-muted);
 }
 
+.append-chooser {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-muted);
+  margin-top: 10px;
+}
+
 /* ---- mobile / narrow screens ---- */
 @media (max-width: 840px) {
   .app {

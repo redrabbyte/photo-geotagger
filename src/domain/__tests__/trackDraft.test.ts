@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest'
 import {
+  appendTrackPoints,
   insertAutoPoint,
   stretchDraftTimes,
+  trimDraftPoints,
   setDraftPointTime,
   moveDraftPoint,
   deleteDraftPoint,
@@ -110,6 +112,65 @@ describe('stretchDraftTimes', () => {
   it('refuses direction flips and degenerate spans', () => {
     expect(stretchDraftTimes(pts, 0, 3, T0 - 5 * M)).toBe(pts)
     expect(stretchDraftTimes(pts, 2, 2, T0)).toBe(pts)
+  })
+})
+
+describe('trimDraftPoints', () => {
+  const M = 60_000
+  const pts: DraftPoint[] = [
+    { lat: 50, lon: 8.0, t: T0, manual: true },
+    { lat: 50, lon: 8.005, t: T0 + 10 * M, manual: false },
+    { lat: 50, lon: 8.01, t: T0 + 20 * M, manual: false },
+    { lat: 50, lon: 8.02, t: T0 + 30 * M, manual: true },
+  ]
+
+  it('deletes everything before the index; the point becomes a manual endpoint', () => {
+    const out = trimDraftPoints(pts, 2, 'before')
+    expect(out).toHaveLength(2)
+    expect(out[0].t).toBe(T0 + 20 * M)
+    expect(out[0].manual).toBe(true)
+  })
+
+  it('deletes everything after the index', () => {
+    const out = trimDraftPoints(pts, 1, 'after')
+    expect(out).toHaveLength(2)
+    expect(out[1].t).toBe(T0 + 10 * M)
+    expect(out[1].manual).toBe(true)
+  })
+
+  it('no-ops at the edges', () => {
+    expect(trimDraftPoints(pts, 0, 'before')).toBe(pts)
+    expect(trimDraftPoints(pts, 3, 'after')).toBe(pts)
+  })
+})
+
+describe('appendTrackPoints', () => {
+  const M = 60_000
+  const base: DraftPoint[] = [
+    { lat: 50, lon: 8, t: T0, manual: true },
+    { lat: 50, lon: 8.01, t: T0 + 30 * M, manual: true },
+  ]
+
+  it('keeps original times when there is no overlap', () => {
+    const { points, shiftedByMs } = appendTrackPoints(base, [
+      { lat: 51, lon: 9, t: T0 + 60 * M },
+      { lat: 51, lon: 9.01, t: T0 + 90 * M },
+    ])
+    expect(shiftedByMs).toBe(0)
+    expect(points).toHaveLength(4)
+    expect(points[2].t).toBe(T0 + 60 * M)
+    expect(points[2].manual).toBe(true)
+  })
+
+  it('shifts an overlapping track past the current end', () => {
+    const { points, shiftedByMs } = appendTrackPoints(base, [
+      { lat: 51, lon: 9, t: T0 + 10 * M },
+      { lat: 51, lon: 9.01, t: T0 + 20 * M },
+    ])
+    expect(shiftedByMs).toBe(20 * M + 1000)
+    expect(points[2].t).toBe(T0 + 30 * M + 1000)
+    // Internal spacing of the appended track is preserved.
+    expect(points[3].t - points[2].t).toBe(10 * M)
   })
 })
 

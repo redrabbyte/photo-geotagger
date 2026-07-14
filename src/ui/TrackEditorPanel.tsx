@@ -49,6 +49,45 @@ function PointTimeEditor({ index, t, stretchFrom }: { index: number; t: number; 
   )
 }
 
+function AppendTrackChooser({ currentTrackId }: { currentTrackId?: string }) {
+  const tracks = useStore((s) => s.tracks)
+  const others = Object.values(tracks).filter((t) => t.id !== currentTrackId)
+  if (others.length === 0) return null
+
+  const append = (trackId: string) => {
+    if (!trackId) return
+    const store = useStore.getState()
+    const result = store.appendTrackToDraft(trackId)
+    if (typeof result === 'string') {
+      store.notify('error', result)
+    } else {
+      store.notify(
+        'success',
+        `Appended ${result.added} point(s)` +
+          (result.shiftedByMs > 0
+            ? `, shifted +${Math.round(result.shiftedByMs / 60_000)}min to stay chronological`
+            : '')
+      )
+    }
+  }
+
+  return (
+    <label className="small append-chooser" title="Append another track's points to the end of this one (times kept; shifted forward only if they would overlap). The other track itself stays unchanged.">
+      Append track
+      <select value="" onChange={(e) => append(e.target.value)}>
+        <option value="" disabled>
+          choose…
+        </option>
+        {others.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name} ({t.points.length} pts)
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 export function TrackEditorPanel() {
   const draft = useStore((s) => s.draft)
   const selectedIndex = useStore((s) => s.draftSelectedIndex)
@@ -126,8 +165,32 @@ export function TrackEditorPanel() {
               Delete point
             </button>
           )}
+          <div className="button-row">
+            <button
+              disabled={selectedIndex === 0}
+              title="Remove every point before this one; this point becomes the new start"
+              onClick={() => {
+                const n = useStore.getState().trimDraftAt(selectedIndex, 'before')
+                if (n > 0) useStore.getState().notify('info', `Removed ${n} point(s) before`)
+              }}
+            >
+              ✂ all before
+            </button>
+            <button
+              disabled={selectedIndex === draft.points.length - 1}
+              title="Remove every point after this one; this point becomes the new end"
+              onClick={() => {
+                const n = useStore.getState().trimDraftAt(selectedIndex, 'after')
+                if (n > 0) useStore.getState().notify('info', `Removed ${n} point(s) after`)
+              }}
+            >
+              ✂ all after
+            </button>
+          </div>
         </div>
       )}
+
+      <AppendTrackChooser currentTrackId={draft.trackId} />
 
       <div className="inspector-actions">
         <button className="primary" disabled={draft.points.length < 2} onClick={save}>
