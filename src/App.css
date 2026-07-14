@@ -600,10 +600,17 @@ select {
     overflow-y: auto;
   }
 
+  /* The map swallows every touch gesture, so it must never fill the whole
+     scroll viewport: it stays pinned (sticky) at a capped height and the
+     panels scroll OVER it — at least ~130px of panel is always on screen
+     to grab and drag up. */
   .center {
     flex: none;
-    height: 45vh;
-    min-height: 260px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    height: min(42vh, calc(100% - 130px));
+    min-height: 180px;
   }
 
   .left,
@@ -613,6 +620,9 @@ select {
     border-right: none;
     border-top: 1px solid var(--border);
     overflow-y: visible;
+    position: relative;
+    z-index: 2;
+    background: var(--bg-panel);
   }
 
   /* Order: map first, then assignment controls, then sources. */
