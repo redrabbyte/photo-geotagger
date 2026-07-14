@@ -193,6 +193,13 @@ export function TrackEditorPanel() {
       <AppendTrackChooser currentTrackId={draft.trackId} />
 
       <div className="inspector-actions">
+        <button
+          disabled={draft.points.length < 2}
+          title="Reverse the track's direction: point order flips, times are mirrored within the same window (start time stays, leg durations reverse)"
+          onClick={() => useStore.getState().reverseDraft()}
+        >
+          ⇄ Reverse direction
+        </button>
         <button className="primary" disabled={draft.points.length < 2} onClick={save}>
           {draft.trackId ? 'Apply changes' : 'Save track'}
         </button>

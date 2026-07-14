@@ -21,6 +21,7 @@ import {
   appendTrackPoints,
   deleteDraftPoint,
   insertAutoPoint,
+  reverseDraftPoints,
   trimDraftPoints,
   moveDraftPoint,
   reinterpolateTimes,
@@ -125,6 +126,8 @@ export interface AppState {
   stretchDraft(anchorIndex: number, index: number, newT: number, base?: DraftPoint[]): void
   /** Delete every draft point before/after the given index. Returns removed count. */
   trimDraftAt(index: number, direction: 'before' | 'after'): number
+  /** Reverse the draft's direction (times mirrored within the same window). */
+  reverseDraft(): void
   /** Append another track's points to the draft. Returns info or an error string. */
   appendTrackToDraft(trackId: string): { added: number; shiftedByMs: number } | string
   copyTrack(trackId: string): void
@@ -497,6 +500,19 @@ export const useStore = create<AppState>((set, get) => ({
       draftAnchorIndex: adjust(s.draftAnchorIndex),
     })
     return removed
+  },
+
+  reverseDraft() {
+    set((s) => {
+      if (!s.draft || s.draft.points.length < 2) return s
+      const n = s.draft.points.length
+      const flip = (i?: number) => (i === undefined ? undefined : n - 1 - i)
+      return {
+        draft: { ...s.draft, points: reverseDraftPoints(s.draft.points) },
+        draftSelectedIndex: flip(s.draftSelectedIndex),
+        draftAnchorIndex: flip(s.draftAnchorIndex),
+      }
+    })
   },
 
   appendTrackToDraft(trackId) {

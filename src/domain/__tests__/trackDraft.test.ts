@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   appendTrackPoints,
   insertAutoPoint,
+  reverseDraftPoints,
   stretchDraftTimes,
   trimDraftPoints,
   setDraftPointTime,
@@ -141,6 +142,38 @@ describe('trimDraftPoints', () => {
   it('no-ops at the edges', () => {
     expect(trimDraftPoints(pts, 0, 'before')).toBe(pts)
     expect(trimDraftPoints(pts, 3, 'after')).toBe(pts)
+  })
+})
+
+describe('reverseDraftPoints', () => {
+  const M = 60_000
+  it('flips order and mirrors times within the same window', () => {
+    const pts: DraftPoint[] = [
+      { lat: 50, lon: 8.0, t: T0, manual: true },
+      { lat: 50, lon: 8.01, t: T0 + 10 * M, manual: false },
+      // 40-minute pause before the end.
+      { lat: 50, lon: 8.02, t: T0 + 50 * M, manual: true },
+    ]
+    const out = reverseDraftPoints(pts)
+    expect(out.map((p) => p.lon)).toEqual([8.02, 8.01, 8.0])
+    // Window preserved.
+    expect(out[0].t).toBe(T0)
+    expect(out[2].t).toBe(T0 + 50 * M)
+    // The 40-minute leg is now at the start: middle point at +40min.
+    expect((out[1].t - T0) / M).toBe(40)
+    // Flags travel with their points.
+    expect(out[1].manual).toBe(false)
+    // Still chronological.
+    expect(validateDraftTimes(out)).toBeUndefined()
+  })
+
+  it('double reverse restores the original', () => {
+    const pts: DraftPoint[] = [
+      { lat: 1, lon: 1, t: T0, manual: true },
+      { lat: 2, lon: 2, t: T0 + M, manual: false },
+      { lat: 3, lon: 3, t: T0 + 5 * M, manual: true },
+    ]
+    expect(reverseDraftPoints(reverseDraftPoints(pts))).toEqual(pts)
   })
 })
 

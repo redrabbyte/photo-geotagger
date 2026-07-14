@@ -151,6 +151,21 @@ export function appendTrackPoints(
   return { points: [...points.map((p) => ({ ...p })), ...appended], shiftedByMs }
 }
 
+/**
+ * Reverse the track's direction: point order flips and times are mirrored
+ * within the original window (new start keeps the old start time, durations
+ * between points are preserved in reverse). Flags travel with their points.
+ */
+export function reverseDraftPoints(points: DraftPoint[]): DraftPoint[] {
+  if (points.length < 2) return points
+  const t0 = points[0].t
+  const t1 = points[points.length - 1].t
+  return points
+    .slice()
+    .reverse()
+    .map((p) => ({ ...p, t: t0 + (t1 - p.t) }))
+}
+
 /** Times must be non-decreasing for a valid GPX track. */
 export function validateDraftTimes(points: DraftPoint[]): string | undefined {
   for (let i = 1; i < points.length; i++) {
