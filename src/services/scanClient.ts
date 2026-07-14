@@ -23,7 +23,9 @@ export class ScanClient {
   private workers: Worker[] = []
   private metaQueue: ScanJob[] = []
   private thumbQueue: ScanJob[] = []
-  /** User-facing thumbnails (selected photo) — served before everything else. */
+  /** Metadata for the photo the user just clicked — served first of all. */
+  private priorityMetaQueue: ScanJob[] = []
+  /** User-facing thumbnails (selected photo) — served before bulk work. */
   private priorityThumbQueue: ScanJob[] = []
   private busy: Set<Worker> = new Set()
   private callbacks: ScanCallbacks
@@ -43,9 +45,18 @@ export class ScanClient {
     }
   }
 
-  /** Queue metadata extraction (high priority). */
-  enqueue(jobs: ScanJob[]): void {
-    this.metaQueue.push(...jobs)
+  /**
+   * Queue metadata extraction. Priority jobs (a clicked, not-yet-scanned
+   * photo) are pulled out of the bulk queue and served before everything.
+   */
+  enqueue(jobs: ScanJob[], priority = false): void {
+    if (priority) {
+      const ids = new Set(jobs.map((j) => j.id))
+      this.metaQueue = this.metaQueue.filter((j) => !ids.has(j.id))
+      this.priorityMetaQueue.push(...jobs)
+    } else {
+      this.metaQueue.push(...jobs)
+    }
     this.pump()
   }
 
@@ -60,7 +71,12 @@ export class ScanClient {
   }
 
   get pending(): number {
-    return this.metaQueue.length + this.thumbQueue.length + this.priorityThumbQueue.length
+    return (
+      this.metaQueue.length +
+      this.thumbQueue.length +
+      this.priorityMetaQueue.length +
+      this.priorityThumbQueue.length
+    )
   }
 
   private handleMessage(worker: Worker, msg: ScanResponse): void {
@@ -88,7 +104,9 @@ export class ScanClient {
     for (const worker of this.workers) {
       if (this.busy.has(worker)) continue
       let request: ScanRequest | undefined
-      if (this.priorityThumbQueue.length > 0) {
+      if (this.priorityMetaQueue.length > 0) {
+        request = { type: 'scan', jobs: this.priorityMetaQueue.splice(0, 4) }
+      } else if (this.priorityThumbQueue.length > 0) {
         request = { type: 'thumb', jobs: this.priorityThumbQueue.splice(0, THUMB_BATCH_SIZE) }
       } else if (this.metaQueue.length > 0) {
         request = { type: 'scan', jobs: this.metaQueue.splice(0, BATCH_SIZE) }
@@ -110,6 +128,7 @@ export class ScanClient {
     this.workers = []
     this.metaQueue = []
     this.thumbQueue = []
+    this.priorityMetaQueue = []
     this.priorityThumbQueue = []
     this.busy.clear()
   }

@@ -5,7 +5,7 @@ import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
 import { useEffect } from 'react'
 import { useStore } from '../state/store'
-import { ensureThumbs } from '../services/appActions'
+import { ensureMeta, ensureThumbs } from '../services/appActions'
 import { TrackEditorPanel } from './TrackEditorPanel'
 import { formatCoord, formatDeltaMs, formatUtc } from './format'
 
@@ -32,7 +32,10 @@ export function Inspector() {
   const [exifDump, setExifDump] = useState<{ fileName: string; text: string } | 'loading' | undefined>()
 
   useEffect(() => {
-    if (activePhotoId) ensureThumbs([activePhotoId], true)
+    if (activePhotoId) {
+      ensureMeta(activePhotoId)
+      ensureThumbs([activePhotoId], true)
+    }
   }, [activePhotoId])
 
   const showExifDetails = async () => {

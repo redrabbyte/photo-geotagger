@@ -39,8 +39,17 @@ function queueUpdate(update: ScanUpdate): void {
 function getScanClient(): ScanClient {
   if (!scanClient) {
     scanClient = new ScanClient({
-      onMeta: (id, meta, sizeBytes, lastModified) =>
-        queueUpdate({ id, kind: 'meta', meta, sizeBytes, lastModified }),
+      onMeta: (id, meta, sizeBytes, lastModified) => {
+        queueUpdate({ id, kind: 'meta', meta, sizeBytes, lastModified })
+        // The user is looking at this photo right now: skip the batch delay.
+        if (urgentMetaIds.delete(id)) {
+          if (flushTimer) {
+            clearTimeout(flushTimer)
+            flushTimer = undefined
+          }
+          flushUpdates()
+        }
+      },
       onThumb: (id, url) => {
         // Thumbnails are on-demand and user-facing: show them immediately.
         queueUpdate({ id, kind: 'thumb', url })
@@ -62,6 +71,18 @@ function getScanClient(): ScanClient {
 }
 
 const thumbsRequested = new Set<string>()
+const urgentMetaIds = new Set<string>()
+
+/**
+ * Pull a not-yet-scanned photo's metadata to the front of the queue —
+ * clicking a photo shows its time/GPS immediately even mid-import.
+ */
+export function ensureMeta(id: string): void {
+  const p = useStore.getState().photos[id]
+  if (!p || p.scanState !== 'pending' || !p.fileHandle) return
+  urgentMetaIds.add(id)
+  getScanClient().enqueue([{ id: p.id, handle: p.fileHandle, kind: p.kind }], true)
+}
 
 /**
  * Request thumbnails for the given photos (visible filmstrip items, the
