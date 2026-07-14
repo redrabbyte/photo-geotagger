@@ -120,56 +120,69 @@ async function persistCurrentSources(): Promise<void> {
   )
 }
 
+/**
+ * Fill in file sizes/mtimes in the background. getFile() is only a stat, but
+ * on Android's SAF each call is slow — blocking ingestion on it made large
+ * folders appear to do nothing at all. Results stream in as batched updates.
+ */
+function statPhotosInBackground(photos: Photo[]): void {
+  void (async () => {
+    const CHUNK = 50
+    for (let i = 0; i < photos.length; i += CHUNK) {
+      await Promise.all(
+        photos.slice(i, i + CHUNK).map(async (p) => {
+          try {
+            const file = await p.fileHandle!.getFile()
+            queueUpdate({ id: p.id, kind: 'stat', sizeBytes: file.size, lastModified: file.lastModified })
+          } catch {
+            // stat failed — the scan worker will retry via getFile anyway
+          }
+        })
+      )
+    }
+  })()
+}
+
 async function ingestSource(source: Source): Promise<void> {
   const store = useStore.getState()
   if (!source.dirHandle) return
-  const scan = await enumerateFolder(source.dirHandle)
+  store.setScanning(true)
+  try {
+    const scan = await enumerateFolder(source.dirHandle)
 
-  const photos: Photo[] = []
-  for (const f of scan.photos) {
-    const record = makePhotoRecord(source.id, f.handle, f.relativePath, f.name, 0, 0)
-    if (record) photos.push(record)
-  }
-  // Fetch file mtimes up front (a stat, not a content read; chunked so a big
-  // folder resolves in well under a second): every photo gets a provisional
-  // timeline position immediately, refined once its EXIF time is scanned.
-  const CHUNK = 200
-  for (let i = 0; i < photos.length; i += CHUNK) {
-    await Promise.all(
-      photos.slice(i, i + CHUNK).map(async (p) => {
-        try {
-          const file = await p.fileHandle!.getFile()
-          p.lastModified = file.lastModified
-          p.sizeBytes = file.size
-        } catch {
-          // stat failed — the scan worker will retry via getFile anyway
-        }
-      })
-    )
-  }
-  store.addSource(source, photos)
-
-  // GPX files found inside the folder are loaded as tracks automatically.
-  for (const gpx of scan.gpxFiles) {
-    try {
-      const text = await (await gpx.handle.getFile()).text()
-      const tracks = parseGpx(text, gpx.name, () => nextTrackId())
-      useStore.getState().addTracks(tracks)
-    } catch (err) {
-      store.notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${gpx.name}`)
+    const photos: Photo[] = []
+    for (const f of scan.photos) {
+      const record = makePhotoRecord(source.id, f.handle, f.relativePath, f.name, 0, 0)
+      if (record) photos.push(record)
     }
-  }
+    // Photos appear immediately; scanning starts immediately; stats stream in.
+    store.addSource(source, photos)
+    if (photos.length > 0) {
+      getScanClient().enqueue(photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind })))
+      statPhotosInBackground(photos)
+    } else {
+      store.setScanning(false)
+    }
 
-  if (photos.length > 0) {
-    store.setScanning(true)
-    getScanClient().enqueue(
-      photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind }))
+    // GPX files found inside the folder are loaded as tracks automatically.
+    for (const gpx of scan.gpxFiles) {
+      try {
+        const text = await (await gpx.handle.getFile()).text()
+        const tracks = parseGpx(text, gpx.name, () => nextTrackId())
+        useStore.getState().addTracks(tracks)
+      } catch (err) {
+        store.notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${gpx.name}`)
+      }
+    }
+
+    store.notify(
+      'info',
+      `${source.name}: ${photos.length} photos${scan.gpxFiles.length ? `, ${scan.gpxFiles.length} GPX file(s)` : ''}`
     )
+  } catch (err) {
+    store.setScanning(false)
+    throw err
   }
-  store.notify(
-    'info',
-    `${source.name}: ${photos.length} photos${scan.gpxFiles.length ? `, ${scan.gpxFiles.length} GPX file(s)` : ''}`
-  )
 }
 
 /** Pick a folder and add it as a new source. */

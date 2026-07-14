@@ -159,6 +159,7 @@ export interface AppState {
 
 export type ScanUpdate =
   | { id: string; kind: 'meta'; meta: PhotoMeta; sizeBytes?: number; lastModified?: number }
+  | { id: string; kind: 'stat'; sizeBytes: number; lastModified: number }
   | { id: string; kind: 'thumb'; url: string }
   | { id: string; kind: 'thumb-failed' }
   | { id: string; kind: 'error'; message: string }
@@ -226,6 +227,9 @@ export const useStore = create<AppState>((set, get) => ({
               sizeBytes: u.sizeBytes ?? p.sizeBytes,
               lastModified: u.lastModified ?? p.lastModified,
             }
+            break
+          case 'stat':
+            photos[u.id] = { ...p, sizeBytes: u.sizeBytes, lastModified: u.lastModified }
             break
           case 'thumb':
             photos[u.id] = { ...p, thumbUrl: u.url }
