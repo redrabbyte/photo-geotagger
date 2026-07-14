@@ -9,10 +9,18 @@ export function WriteBar() {
   const settings = useStore((s) => s.settings)
   const writeProgress = useStore((s) => s.writeProgress)
   const [confirmExiftool, setConfirmExiftool] = useState(false)
+  const [confirmStripped, setConfirmStripped] = useState(false)
 
   const dirty = useMemo(() => Object.values(photos).filter(isDirty), [photos])
   const dirtyRaw = dirty.filter((p) => p.kind !== 'jpeg').length
+  // Files whose GPS Android stripped on read: writing bakes the stripped copy in.
+  const stripped = useMemo(() => dirty.filter((p) => p.meta?.gpsEmpty), [dirty])
   const writing = writeProgress !== undefined
+
+  const startWrite = () => {
+    if (stripped.length > 0) setConfirmStripped(true)
+    else void writeDirtyFlow()
+  }
 
   const onModeChange = (mode: WriteMode) => {
     if (mode === 'exiftool') {
@@ -65,10 +73,53 @@ export function WriteBar() {
               ? `${dirtyRaw} RAW/HEIC file(s) will get .xmp sidecars`
               : undefined
           }
-          onClick={() => void writeDirtyFlow()}
+          onClick={startWrite}
         >
           Write GPS to {dirty.length} file{dirty.length === 1 ? '' : 's'}
         </button>
+      )}
+
+      {confirmStripped && (
+        <div className="modal-backdrop" onClick={() => setConfirmStripped(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>
+              {stripped.length} file{stripped.length === 1 ? ' was' : 's were'} read without position data
+            </h3>
+            <p>
+              Android strips position data from photos when a browser reads them — the original
+              file may still contain its real location, but this app only ever received a
+              stripped copy.
+            </p>
+            <p>
+              <strong>Writing replaces the file with that stripped copy</strong> plus your newly
+              assigned position. Whatever location the original held is then permanently gone.
+              Only proceed for these files if your assigned position is what you want in them.
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => setConfirmStripped(false)}>Cancel</button>
+              {dirty.length > stripped.length && (
+                <button
+                  onClick={() => {
+                    setConfirmStripped(false)
+                    const strippedIds = new Set(stripped.map((p) => p.id))
+                    void writeDirtyFlow(dirty.filter((p) => !strippedIds.has(p.id)).map((p) => p.id))
+                  }}
+                >
+                  Skip {stripped.length} stripped file{stripped.length === 1 ? '' : 's'}, write {dirty.length - stripped.length}
+                </button>
+              )}
+              <button
+                className="primary"
+                onClick={() => {
+                  setConfirmStripped(false)
+                  void writeDirtyFlow()
+                }}
+              >
+                Write all {dirty.length}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {confirmExiftool && (

@@ -123,9 +123,8 @@ export function Inspector() {
                 <tr>
                   <td className="warn">Hint</td>
                   <td className="warn">
-                    Android removes photo locations from files picked via the gallery view
-                    (scoped-storage redaction). Re-add the folder by navigating the file tree
-                    (☰ → device → DCIM) instead of “Images/Recent”, or load the file on desktop.
+                    Android strips position data from photos when a browser reads them. You can
+                    still assign a position here and overwrite the file with it.
                   </td>
                 </tr>
               )}
