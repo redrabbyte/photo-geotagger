@@ -4,6 +4,7 @@ import {
   formatExifDateTime,
   formatTzOffset,
   insertGpsIntoJpeg,
+  insertTimeIntoJpeg,
   validateJpegOutput,
 } from '../exif/writeJpeg'
 import { makeJpegWithExif } from './fixtures'
@@ -86,6 +87,21 @@ describe('insertGpsIntoJpeg', () => {
         expectedDateTimeMs: correction.wallClockMs + 3600_000,
       })
     ).rejects.toThrow(/does not match/)
+  })
+
+  it('time-only rewrite fixes the clock without touching GPS', async () => {
+    const jpeg = makeJpegWithExif(DTO)
+    const correction = { wallClockMs: Date.parse('2026-06-01T13:34:56Z'), tzOffsetMin: 120 }
+    const out = insertTimeIntoJpeg(jpeg, correction)
+    const buf = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
+    const parsed = await exifr.parse(buf, { exif: true, gps: true })
+    expect((parsed.DateTimeOriginal as Date).getHours()).toBe(13)
+    expect(parsed.OffsetTimeOriginal).toBe('+02:00')
+    expect(parsed.latitude).toBeUndefined()
+    // Validator without gps skips GPS checks but verifies the time.
+    await expect(
+      validateJpegOutput(out, { originalSize: jpeg.byteLength, expectedDateTimeMs: correction.wallClockMs })
+    ).resolves.toBeUndefined()
   })
 
   it('formats EXIF datetime and tz offsets', () => {

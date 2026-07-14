@@ -106,6 +106,13 @@ export interface AppState {
     error?: string,
     timeCorrection?: { wallClockMs: number; tzOffsetMin: number }
   ): void
+  /** Result of a time-only write: updates meta, leaves GPS write state alone. */
+  markTimeWriteResult(
+    photoId: string,
+    ok: boolean,
+    error?: string,
+    timeCorrection?: { wallClockMs: number; tzOffsetMin: number }
+  ): void
   setWriteProgress(progress?: { done: number; total: number; current: string }): void
   setSettings(patch: Partial<AppSettings>): void
   setSnapToTrack(snap: boolean): void
@@ -367,6 +374,28 @@ export const useStore = create<AppState>((set, get) => ({
         ? { ...p, writeState: 'written', writeTarget: target, writeError: undefined, meta }
         : { ...p, writeState: 'write-error', writeError: error }
       return { photos: { ...s.photos, [photoId]: updated } }
+    })
+  },
+
+  markTimeWriteResult(photoId, ok, error, timeCorrection) {
+    set((s) => {
+      const p = s.photos[photoId]
+      if (!p) return s
+      if (!ok) {
+        return { photos: { ...s.photos, [photoId]: { ...p, writeState: 'write-error', writeError: error } } }
+      }
+      const meta =
+        p.meta && timeCorrection
+          ? {
+              ...p.meta,
+              captureLocalMs: timeCorrection.wallClockMs,
+              tzOffsetMin: timeCorrection.tzOffsetMin,
+              timeCorrected: true,
+            }
+          : p.meta
+      // GPS write state is untouched: a pending assignment stays dirty.
+      const writeState = p.assignment && p.writeState !== 'written' ? 'dirty' : p.writeState === 'writing' ? 'clean' : p.writeState
+      return { photos: { ...s.photos, [photoId]: { ...p, meta, writeState, writeError: undefined } } }
     })
   },
 

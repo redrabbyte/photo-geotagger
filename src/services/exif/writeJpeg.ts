@@ -109,9 +109,26 @@ export function insertGpsIntoJpeg(
   return binaryStringToBytes(output)
 }
 
+/** Rewrite only the capture time tags (no GPS) — for clock-fix-only writes. */
+export function insertTimeIntoJpeg(jpegBytes: ArrayBuffer, time: TimeCorrection): Uint8Array {
+  const dataStr = bufferToBinaryString(jpegBytes)
+  const exifObj = piexif.load(dataStr)
+  const exifIfd: Record<number, unknown> = exifObj['Exif'] ?? {}
+  const dateTime = formatExifDateTime(time.wallClockMs)
+  const tz = formatTzOffset(time.tzOffsetMin)
+  exifIfd[piexif.ExifIFD.DateTimeOriginal] = dateTime
+  exifIfd[piexif.ExifIFD.DateTimeDigitized] = dateTime
+  exifIfd[OFFSET_TIME_ORIGINAL] = tz
+  exifIfd[OFFSET_TIME_DIGITIZED] = tz
+  exifObj['Exif'] = exifIfd
+  const exifBytes = piexif.dump(exifObj)
+  return binaryStringToBytes(piexif.insert(exifBytes, dataStr))
+}
+
 export interface JpegValidationInput {
   originalSize: number
-  gps: GeoPoint
+  /** Omitted for time-only writes: GPS checks are skipped. */
+  gps?: GeoPoint
   originalDateTimeOriginal?: unknown
   /** When a time correction was written, the wall-clock ms it must now show. */
   expectedDateTimeMs?: number
@@ -130,13 +147,15 @@ export async function validateJpegOutput(bytes: Uint8Array, input: JpegValidatio
   }
   const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   const parsed = await exifr.parse(buf, { gps: true, exif: true })
-  const lat = parsed?.latitude
-  const lon = parsed?.longitude
-  if (typeof lat !== 'number' || typeof lon !== 'number') {
-    throw new Error('GPS did not round-trip in rewritten JPEG')
-  }
-  if (Math.abs(lat - input.gps.lat) > 1e-4 || Math.abs(lon - input.gps.lon) > 1e-4) {
-    throw new Error('GPS in rewritten JPEG does not match the assigned position')
+  if (input.gps) {
+    const lat = parsed?.latitude
+    const lon = parsed?.longitude
+    if (typeof lat !== 'number' || typeof lon !== 'number') {
+      throw new Error('GPS did not round-trip in rewritten JPEG')
+    }
+    if (Math.abs(lat - input.gps.lat) > 1e-4 || Math.abs(lon - input.gps.lon) > 1e-4) {
+      throw new Error('GPS in rewritten JPEG does not match the assigned position')
+    }
   }
   const newDto = parsed?.DateTimeOriginal
   if (input.expectedDateTimeMs !== undefined) {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { effectiveUtcMs } from '../domain/types'
+import { displayPosition, effectiveUtcMs } from '../domain/types'
 import { positionAtTime } from '../domain/positionAtTime'
 import { useStore } from '../state/store'
 import { formatUtc } from './format'
@@ -9,6 +9,8 @@ interface TimedPhoto {
   t: number
   color: string
   selected: boolean
+  /** Photo has a position (original GPS or assigned). */
+  hasPos: boolean
 }
 
 const HEIGHT = 72
@@ -40,7 +42,13 @@ export function Timeline() {
       if (!src) continue
       const t = effectiveUtcMs(p, src)
       if (t === undefined) continue
-      out.push({ id: p.id, t, color: src.color, selected: selectedIds.has(p.id) })
+      out.push({
+        id: p.id,
+        t,
+        color: src.color,
+        selected: selectedIds.has(p.id),
+        hasPos: displayPosition(p) !== undefined,
+      })
     }
     out.sort((a, b) => a.t - b.t)
     return out
@@ -175,12 +183,18 @@ export function Timeline() {
     }
     ctx.globalAlpha = 1
 
-    // Photo ticks.
+    // Photo ticks: dim without a position, green cap when GPS is present.
     for (const p of timed) {
       const x = xOf(p.t)
       if (x < -2 || x > width + 2) continue
+      ctx.globalAlpha = p.hasPos ? 1 : 0.4
       ctx.fillStyle = p.color
       ctx.fillRect(x - 1, TICK_TOP, 2, p.selected ? 26 : 18)
+      ctx.globalAlpha = 1
+      if (p.hasPos) {
+        ctx.fillStyle = '#6fca7c'
+        ctx.fillRect(x - 1.5, TICK_TOP - 4, 3, 3)
+      }
       if (p.selected) {
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(x - 1, TICK_TOP + 26, 2, 4)

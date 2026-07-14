@@ -10,7 +10,7 @@ import {
   rememberGpxHandles,
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
-import { writeBatch } from './writePipeline'
+import { timeCorrectionFor, writeBatch, writeTimeBatch } from './writePipeline'
 import { useStore, nextSourceId, nextTrackId, makePhotoRecord, SOURCE_COLORS, type ScanUpdate } from '../state/store'
 
 let scanClient: ScanClient | undefined
@@ -330,6 +330,74 @@ export async function exportDraftGpx(): Promise<void> {
 }
 
 /** Write all dirty photos (or the given subset) using current settings. */
+/** Photos whose file needs a clock/timezone fix written (independent of GPS). */
+export function timeFixTargets(): Photo[] {
+  const store = useStore.getState()
+  return Object.values(store.photos).filter((p) => {
+    if (!p.fileHandle || p.writeState === 'writing') return false
+    const source = store.sources[p.sourceId]
+    return source !== undefined && timeCorrectionFor(p, source) !== undefined
+  })
+}
+
+/**
+ * Write ONLY the corrected capture time into every file that needs it —
+ * e.g. after calibrating a source's clock — regardless of GPS assignments.
+ */
+export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
+  const store = useStore.getState()
+  const all = timeFixTargets()
+  const targets = onlyIds ? all.filter((p) => onlyIds.includes(p.id)) : all
+  if (targets.length === 0) {
+    store.notify('info', 'No files need a time correction.')
+    return
+  }
+
+  for (const sourceId of new Set(targets.map((p) => p.sourceId))) {
+    const source = store.sources[sourceId]
+    if (!source) continue
+    if (source.dirHandle) {
+      if (!(await ensurePermission(source.dirHandle, 'readwrite'))) {
+        store.notify('error', `Write permission denied for "${source.name}" — nothing was written.`)
+        return
+      }
+    } else {
+      for (const p of targets.filter((t) => t.sourceId === sourceId)) {
+        if (p.fileHandle && !(await ensurePermission(p.fileHandle, 'readwrite'))) {
+          store.notify('error', `Write permission denied for "${p.fileName}" — nothing was written.`)
+          return
+        }
+      }
+    }
+  }
+
+  store.markWriting(targets.map((p) => p.id))
+  const results = await writeTimeBatch(
+    targets,
+    new Map(Object.entries(store.sources)),
+    {
+      mode: store.settings.writeMode,
+      backupOriginals: store.settings.backupOriginals,
+      onProgress: (done, total, current) =>
+        useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
+    },
+    (result) =>
+      useStore.getState().markTimeWriteResult(result.photoId, result.ok, result.error, result.timeCorrection)
+  )
+
+  const okCount = results.filter((r) => r.ok).length
+  const failed = results.length - okCount
+  useStore.getState().setWriteProgress(undefined)
+  useStore
+    .getState()
+    .notify(
+      failed ? 'error' : 'success',
+      failed
+        ? `Corrected times in ${okCount}/${results.length} — ${failed} failed (see photo badges)`
+        : `Corrected times in ${okCount} file(s)`
+    )
+}
+
 export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   const store = useStore.getState()
   const all = Object.values(store.photos).filter((p) => isDirty(p) && p.writeState !== 'writing')

@@ -40,7 +40,8 @@ export type ExiftoolRequest =
       requestId: number
       fileName: string
       bytes: ArrayBuffer
-      gps: GeoPoint
+      /** Omit for time-only writes. */
+      gps?: GeoPoint
       timeCorrection?: WorkerTimeCorrection
     }
   | { type: 'inspect'; requestId: number; fileName: string; bytes: ArrayBuffer }
@@ -53,20 +54,22 @@ export type ExiftoolResponse =
 async function writeGps(
   fileName: string,
   bytes: ArrayBuffer,
-  gps: GeoPoint,
+  gps: GeoPoint | undefined,
   timeCorrection?: WorkerTimeCorrection
 ): Promise<ArrayBuffer> {
+  if (!gps && !timeCorrection) throw new Error('Nothing to write')
   const input = { name: fileName, data: new Uint8Array(bytes) }
-  const tags: Record<string, string | number> = {
-    GPSVersionID: '2.3.0.0',
-    GPSLatitude: Math.abs(gps.lat),
-    GPSLatitudeRef: gps.lat >= 0 ? 'N' : 'S',
-    GPSLongitude: Math.abs(gps.lon),
-    GPSLongitudeRef: gps.lon >= 0 ? 'E' : 'W',
-  }
-  if (gps.ele !== undefined) {
-    tags.GPSAltitude = Math.abs(gps.ele)
-    tags.GPSAltitudeRef = gps.ele < 0 ? 1 : 0
+  const tags: Record<string, string | number> = {}
+  if (gps) {
+    tags.GPSVersionID = '2.3.0.0'
+    tags.GPSLatitude = Math.abs(gps.lat)
+    tags.GPSLatitudeRef = gps.lat >= 0 ? 'N' : 'S'
+    tags.GPSLongitude = Math.abs(gps.lon)
+    tags.GPSLongitudeRef = gps.lon >= 0 ? 'E' : 'W'
+    if (gps.ele !== undefined) {
+      tags.GPSAltitude = Math.abs(gps.ele)
+      tags.GPSAltitudeRef = gps.ele < 0 ? 1 : 0
+    }
   }
   if (timeCorrection) {
     tags.DateTimeOriginal = timeCorrection.exifDateTime
@@ -82,23 +85,28 @@ async function writeGps(
   const outBytes: Uint8Array = result.data instanceof Uint8Array ? result.data : new Uint8Array(result.data as ArrayBuffer)
 
   // Verify with an independent read before the caller may overwrite anything.
-  const verify = await parseMetadata<Array<Record<string, number>>>(
+  const verify = await parseMetadata<Array<Record<string, unknown>>>(
     { name: fileName, data: outBytes },
     {
-      args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude'],
-      transform: (s) => JSON.parse(s) as Array<Record<string, number>>,
+      args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude', '-DateTimeOriginal'],
+      transform: (s) => JSON.parse(s) as Array<Record<string, unknown>>,
       fetch: wasmFetch,
     }
   )
   if (!verify.success) throw new Error(`verification read failed: ${verify.error}`)
   const entry = verify.data[0] ?? {}
-  const lat = entry.GPSLatitude
-  const lon = entry.GPSLongitude
-  if (typeof lat !== 'number' || typeof lon !== 'number') {
-    throw new Error('GPS missing from rewritten file — refusing to overwrite original')
+  if (gps) {
+    const lat = entry.GPSLatitude
+    const lon = entry.GPSLongitude
+    if (typeof lat !== 'number' || typeof lon !== 'number') {
+      throw new Error('GPS missing from rewritten file — refusing to overwrite original')
+    }
+    if (Math.abs(lat - gps.lat) > 1e-4 || Math.abs(lon - gps.lon) > 1e-4) {
+      throw new Error('GPS in rewritten file does not match assigned position')
+    }
   }
-  if (Math.abs(lat - gps.lat) > 1e-4 || Math.abs(lon - gps.lon) > 1e-4) {
-    throw new Error('GPS in rewritten file does not match assigned position')
+  if (timeCorrection && entry.DateTimeOriginal !== timeCorrection.exifDateTime) {
+    throw new Error('Corrected capture time missing from rewritten file — refusing to overwrite original')
   }
   if (outBytes.length < bytes.byteLength * 0.5) {
     throw new Error('Rewritten file is implausibly small — refusing to overwrite original')

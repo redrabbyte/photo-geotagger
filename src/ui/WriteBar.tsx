@@ -1,25 +1,44 @@
 import { useMemo, useState } from 'react'
 import { isDirty } from '../domain/types'
 import { useStore } from '../state/store'
-import { writeDirtyFlow } from '../services/appActions'
-import type { WriteMode } from '../services/writePipeline'
+import { writeDirtyFlow, writeTimesFlow } from '../services/appActions'
+import { timeCorrectionFor, type WriteMode } from '../services/writePipeline'
 
 export function WriteBar() {
   const photos = useStore((s) => s.photos)
   const settings = useStore((s) => s.settings)
   const writeProgress = useStore((s) => s.writeProgress)
+  const sources = useStore((s) => s.sources)
   const [confirmExiftool, setConfirmExiftool] = useState(false)
-  const [confirmStripped, setConfirmStripped] = useState(false)
+  // Pending flow awaiting the stripped-files confirmation.
+  const [confirmStripped, setConfirmStripped] = useState<'gps' | 'time' | null>(null)
 
   const dirty = useMemo(() => Object.values(photos).filter(isDirty), [photos])
   const dirtyRaw = dirty.filter((p) => p.kind !== 'jpeg').length
-  // Files whose GPS Android stripped on read: writing bakes the stripped copy in.
-  const stripped = useMemo(() => dirty.filter((p) => p.meta?.gpsEmpty), [dirty])
+  // Photos whose file needs a clock/timezone fix (independent of GPS).
+  const timeFix = useMemo(
+    () =>
+      Object.values(photos).filter((p) => {
+        if (!p.fileHandle || p.writeState === 'writing') return false
+        const src = sources[p.sourceId]
+        return src !== undefined && timeCorrectionFor(p, src) !== undefined
+      }),
+    [photos, sources]
+  )
   const writing = writeProgress !== undefined
 
-  const startWrite = () => {
-    if (stripped.length > 0) setConfirmStripped(true)
-    else void writeDirtyFlow()
+  const flowTargets = (flow: 'gps' | 'time') => (flow === 'gps' ? dirty : timeFix)
+  // Files whose GPS Android stripped on read: writing bakes the stripped copy in.
+  const strippedIn = (flow: 'gps' | 'time') => flowTargets(flow).filter((p) => p.meta?.gpsEmpty)
+
+  const runFlow = (flow: 'gps' | 'time', onlyIds?: string[]) => {
+    if (flow === 'gps') void writeDirtyFlow(onlyIds)
+    else void writeTimesFlow(onlyIds)
+  }
+
+  const startWrite = (flow: 'gps' | 'time') => {
+    if (strippedIn(flow).length > 0) setConfirmStripped(flow)
+    else runFlow(flow)
   }
 
   const onModeChange = (mode: WriteMode) => {
@@ -78,62 +97,78 @@ export function WriteBar() {
           <progress value={writeProgress.done} max={writeProgress.total} />
         </span>
       ) : (
-        <button
-          className="primary"
-          disabled={dirty.length === 0}
-          title={
-            settings.writeMode === 'safe' && dirtyRaw > 0
-              ? `${dirtyRaw} RAW/HEIC file(s) will get .xmp sidecars`
-              : undefined
-          }
-          onClick={startWrite}
-        >
-          Write GPS to {dirty.length} file{dirty.length === 1 ? '' : 's'}
-        </button>
+        <>
+          {timeFix.length > 0 && (
+            <button
+              title="Write ONLY the corrected capture time (clock offset + timezone) into every file that needs it — also files without a GPS position. GPS assignments are not written by this button."
+              onClick={() => startWrite('time')}
+            >
+              Fix times in {timeFix.length} file{timeFix.length === 1 ? '' : 's'}
+            </button>
+          )}
+          <button
+            className="primary"
+            disabled={dirty.length === 0}
+            title={
+              settings.writeMode === 'safe' && dirtyRaw > 0
+                ? `${dirtyRaw} RAW/HEIC file(s) will get .xmp sidecars`
+                : undefined
+            }
+            onClick={() => startWrite('gps')}
+          >
+            Write GPS to {dirty.length} file{dirty.length === 1 ? '' : 's'}
+          </button>
+        </>
       )}
 
-      {confirmStripped && (
-        <div className="modal-backdrop" onClick={() => setConfirmStripped(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>
-              {stripped.length} file{stripped.length === 1 ? ' was' : 's were'} read without position data
-            </h3>
-            <p>
-              Android strips position data from photos when a browser reads them — the original
-              file may still contain its real location, but this app only ever received a
-              stripped copy.
-            </p>
-            <p>
-              <strong>Writing replaces the file with that stripped copy</strong> plus your newly
-              assigned position. Whatever location the original held is then permanently gone.
-              Only proceed for these files if your assigned position is what you want in them.
-            </p>
-            <div className="modal-actions">
-              <button onClick={() => setConfirmStripped(false)}>Cancel</button>
-              {dirty.length > stripped.length && (
-                <button
-                  onClick={() => {
-                    setConfirmStripped(false)
-                    const strippedIds = new Set(stripped.map((p) => p.id))
-                    void writeDirtyFlow(dirty.filter((p) => !strippedIds.has(p.id)).map((p) => p.id))
-                  }}
-                >
-                  Skip {stripped.length} stripped file{stripped.length === 1 ? '' : 's'}, write {dirty.length - stripped.length}
-                </button>
-              )}
-              <button
-                className="primary"
-                onClick={() => {
-                  setConfirmStripped(false)
-                  void writeDirtyFlow()
-                }}
-              >
-                Write all {dirty.length}
-              </button>
+      {confirmStripped &&
+        (() => {
+          const flow = confirmStripped
+          const targets = flowTargets(flow)
+          const stripped = strippedIn(flow)
+          return (
+            <div className="modal-backdrop" onClick={() => setConfirmStripped(null)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <h3>
+                  {stripped.length} file{stripped.length === 1 ? ' was' : 's were'} read without position data
+                </h3>
+                <p>
+                  Android strips position data from photos when a browser reads them — the original
+                  file may still contain its real location, but this app only ever received a
+                  stripped copy.
+                </p>
+                <p>
+                  <strong>Writing replaces the file with that stripped copy.</strong> Whatever
+                  location the original held is then permanently gone. Only proceed for these
+                  files if that is what you want.
+                </p>
+                <div className="modal-actions">
+                  <button onClick={() => setConfirmStripped(null)}>Cancel</button>
+                  {targets.length > stripped.length && (
+                    <button
+                      onClick={() => {
+                        setConfirmStripped(null)
+                        const strippedIds = new Set(stripped.map((p) => p.id))
+                        runFlow(flow, targets.filter((p) => !strippedIds.has(p.id)).map((p) => p.id))
+                      }}
+                    >
+                      Skip {stripped.length} stripped, write {targets.length - stripped.length}
+                    </button>
+                  )}
+                  <button
+                    className="primary"
+                    onClick={() => {
+                      setConfirmStripped(null)
+                      runFlow(flow)
+                    }}
+                  >
+                    Write all {targets.length}
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          )
+        })()}
 
       {confirmExiftool && (
         <div className="modal-backdrop" onClick={() => setConfirmExiftool(false)}>

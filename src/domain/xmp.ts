@@ -1,15 +1,12 @@
 import type { GeoPoint } from './types'
 import { degToXmpCoordinate, xmpCoordinateToDeg } from './gpsMath'
 
-const XMP_TEMPLATE = (lat: string, lon: string, altTags: string, modifyDate: string) => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+const XMP_TEMPLATE = (attrs: string, modifyDate: string) => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="photo-geotagger">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:exif="http://ns.adobe.com/exif/1.0/"
-    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-   exif:GPSVersionID="2.3.0.0"
-   exif:GPSLatitude="${lat}"
-   exif:GPSLongitude="${lon}"${altTags}
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"${attrs}
    xmp:ModifyDate="${modifyDate}"/>
  </rdf:RDF>
 </x:xmpmeta>
@@ -47,21 +44,24 @@ export interface SidecarTimeCorrection {
   tzOffsetMin: number
 }
 
-/** Generate a fresh XMP sidecar containing GPS (+ optional corrected time) + ModifyDate. */
+/** Generate a fresh XMP sidecar with GPS and/or corrected time + ModifyDate. */
 export function generateXmpSidecar(
-  gps: GeoPoint,
+  gps: GeoPoint | undefined,
   now: Date = new Date(),
   time?: SidecarTimeCorrection
 ): string {
-  const timeAttr = time
-    ? `\n   exif:DateTimeOriginal="${xmpDateTime(time.wallClockMs, time.tzOffsetMin)}"`
-    : ''
-  return XMP_TEMPLATE(
-    degToXmpCoordinate(gps.lat, true),
-    degToXmpCoordinate(gps.lon, false),
-    altAttributes(gps.ele) + timeAttr,
-    isoNow(now)
-  )
+  let attrs = ''
+  if (gps) {
+    attrs +=
+      `\n   exif:GPSVersionID="2.3.0.0"` +
+      `\n   exif:GPSLatitude="${degToXmpCoordinate(gps.lat, true)}"` +
+      `\n   exif:GPSLongitude="${degToXmpCoordinate(gps.lon, false)}"` +
+      altAttributes(gps.ele)
+  }
+  if (time) {
+    attrs += `\n   exif:DateTimeOriginal="${xmpDateTime(time.wallClockMs, time.tzOffsetMin)}"`
+  }
+  return XMP_TEMPLATE(attrs, isoNow(now))
 }
 
 /** All elements in document order whose local (un-prefixed) name matches. */
@@ -100,7 +100,7 @@ function attributeByLocalName(el: Element, localName: string): string | undefine
  */
 export function mergeGpsIntoXmp(
   existingXml: string,
-  gps: GeoPoint,
+  gps: GeoPoint | undefined,
   parser: DOMParser = new DOMParser(),
   time?: SidecarTimeCorrection
 ): string {
@@ -118,11 +118,11 @@ export function mergeGpsIntoXmp(
   }
 
   const gpsProps: Record<string, string | undefined> = {
-    GPSVersionID: '2.3.0.0',
-    GPSLatitude: degToXmpCoordinate(gps.lat, true),
-    GPSLongitude: degToXmpCoordinate(gps.lon, false),
-    GPSAltitude: gps.ele !== undefined ? `${Math.round(Math.abs(gps.ele) * 100)}/100` : undefined,
-    GPSAltitudeRef: gps.ele !== undefined ? (gps.ele < 0 ? '1' : '0') : undefined,
+    GPSVersionID: gps ? '2.3.0.0' : undefined,
+    GPSLatitude: gps ? degToXmpCoordinate(gps.lat, true) : undefined,
+    GPSLongitude: gps ? degToXmpCoordinate(gps.lon, false) : undefined,
+    GPSAltitude: gps?.ele !== undefined ? `${Math.round(Math.abs(gps.ele) * 100)}/100` : undefined,
+    GPSAltitudeRef: gps?.ele !== undefined ? (gps.ele < 0 ? '1' : '0') : undefined,
     DateTimeOriginal: time ? xmpDateTime(time.wallClockMs, time.tzOffsetMin) : undefined,
   }
 

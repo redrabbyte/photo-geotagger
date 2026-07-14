@@ -22,6 +22,9 @@ export function Filmstrip() {
   const [viewWidth, setViewWidth] = useState(1200)
   // Touch-friendly multi-select: taps toggle instead of replacing selection.
   const [multiSelect, setMultiSelect] = useState(false)
+  // Range mode ("from–to"): first tap marks the start, second tap selects the range.
+  const [rangeMode, setRangeMode] = useState(false)
+  const [rangeStart, setRangeStart] = useState<string | null>(null)
   const lastClickedRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -59,8 +62,28 @@ export function Filmstrip() {
   const count = Math.ceil(viewWidth / ITEM_W) + 8
   const visible = ordered.slice(first, first + count)
 
+  const selectRange = (fromId: string, toId: string, additive: boolean) => {
+    const store = useStore.getState()
+    const a = ordered.findIndex((p) => p.id === fromId)
+    const b = ordered.findIndex((p) => p.id === toId)
+    if (a < 0 || b < 0) return
+    const range = ordered.slice(Math.min(a, b), Math.max(a, b) + 1).map((p) => p.id)
+    store.setSelection(additive ? [...new Set([...store.selectedIds, ...range])] : range)
+    store.setActivePhoto(toId)
+  }
+
   const onItemClick = (photo: Photo, e: React.MouseEvent) => {
     const store = useStore.getState()
+    if (rangeMode) {
+      if (!rangeStart) {
+        setRangeStart(photo.id)
+        store.toggleSelected(photo.id, true)
+      } else {
+        selectRange(rangeStart, photo.id, true)
+        setRangeStart(null)
+      }
+      return
+    }
     if (e.shiftKey && lastClickedRef.current) {
       const a = ordered.findIndex((p) => p.id === lastClickedRef.current)
       const b = ordered.findIndex((p) => p.id === photo.id)
@@ -88,6 +111,16 @@ export function Filmstrip() {
           onClick={() => setMultiSelect((v) => !v)}
         >
           ☑ multi
+        </button>
+        <button
+          className={rangeMode ? 'primary' : ''}
+          title="Range select: tap the first photo, then the last — everything in between is selected (added to the current selection)"
+          onClick={() => {
+            setRangeMode((v) => !v)
+            setRangeStart(null)
+          }}
+        >
+          {rangeMode && rangeStart ? 'a…?' : 'a…b'}
         </button>
         {selectedIds.size > 0 && (
           <>
