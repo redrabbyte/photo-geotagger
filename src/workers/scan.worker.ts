@@ -5,10 +5,8 @@ import { extractMeta } from '../services/exif/readMeta'
 
 export interface ScanJob {
   id: string
+  handle: FileSystemFileHandle
   kind: PhotoKind
-  handle?: FileSystemFileHandle
-  /** Plain File for read-only sources (classic <input> folder picker). */
-  file?: File
 }
 
 export interface ScanRequest {
@@ -62,7 +60,7 @@ self.onmessage = async (event: MessageEvent<ScanRequest>) => {
   const { jobs } = event.data
   for (const job of jobs) {
     try {
-      const file = job.file ?? (await job.handle!.getFile())
+      const file = await job.handle.getFile()
       const meta = await extractMeta(file, file.lastModified)
       postMessage({
         type: 'meta',

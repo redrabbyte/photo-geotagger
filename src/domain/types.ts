@@ -89,8 +89,6 @@ export interface Photo {
   sizeBytes: number
   lastModified: number
   fileHandle?: FileSystemFileHandle
-  /** Set instead of fileHandle for read-only sources (classic <input> folder). */
-  file?: File
 
   meta?: PhotoMeta
   scanState: ScanState

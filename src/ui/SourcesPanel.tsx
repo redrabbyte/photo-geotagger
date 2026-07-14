@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { isStale } from '../domain/matching'
 import { useStore } from '../state/store'
 import {
-  addClassicFolderFlow,
   addFilesFlow,
   addGpxFlow,
   addSourceFlow,
@@ -107,7 +106,6 @@ export function SourcesPanel() {
         <span className="button-row">
           <button onClick={() => void addSourceFlow()}>+ Folder</button>
           <button title="Pick individual image files instead of a whole folder" onClick={() => void addFilesFlow()}>+ Files</button>
-          <ClassicFolderButton />
         </span>
       </div>
       {scanning && <div className="scanning-note">Scanning photos…</div>}
@@ -214,36 +212,6 @@ export function SourcesPanel() {
 
       {showNewTrack && <NewTrackDialog onClose={() => setShowNewTrack(false)} />}
     </div>
-  )
-}
-
-/**
- * TEST: folder loading via classic <input type="file" webkitdirectory>.
- * Works in every browser (incl. Firefox/Safari/mobile) but yields one-shot
- * File snapshots — the source is read-only, GPS cannot be written back.
- */
-function ClassicFolderButton() {
-  const inputRef = useRef<HTMLInputElement | null>(null)
-  return (
-    <>
-      <button
-        title="TEST: load a folder via classic <input webkitdirectory>. Works in any browser, but read-only — writing GPS back is not possible for this source."
-        onClick={() => inputRef.current?.click()}
-      >
-        + Folder 🧪
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        style={{ display: 'none' }}
-        {...({ webkitdirectory: '' } as Record<string, string>)}
-        onChange={(e) => {
-          if (e.target.files) void addClassicFolderFlow(e.target.files)
-          e.target.value = ''
-        }}
-      />
-    </>
   )
 }
 
