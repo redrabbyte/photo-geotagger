@@ -223,26 +223,35 @@ export function SourcesPanel() {
  * File snapshots — the source is read-only, GPS cannot be written back.
  */
 function ClassicFolderButton() {
-  const inputRef = useRef<HTMLInputElement | null>(null)
+  const dirInputRef = useRef<HTMLInputElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const onFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) void addClassicFolderFlow(e.target.files)
+    e.target.value = ''
+  }
   return (
     <>
       <button
         title="TEST: load a folder via classic <input webkitdirectory>. Works in any browser, but read-only — writing GPS back is not possible for this source."
-        onClick={() => inputRef.current?.click()}
+        onClick={() => dirInputRef.current?.click()}
       >
         + Folder 🧪
       </button>
+      <button
+        title="TEST: plain <input type=file multiple> without a type filter — on Android this opens the documents UI in file mode, where the ☰ menu lets you switch the source (internal storage, SD card, …). Long-press to multi-select. Read-only."
+        onClick={() => fileInputRef.current?.click()}
+      >
+        + Files 🧪
+      </button>
       <input
-        ref={inputRef}
+        ref={dirInputRef}
         type="file"
         multiple
         style={{ display: 'none' }}
         {...({ webkitdirectory: '' } as Record<string, string>)}
-        onChange={(e) => {
-          if (e.target.files) void addClassicFolderFlow(e.target.files)
-          e.target.value = ''
-        }}
+        onChange={onFiles}
       />
+      <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={onFiles} />
     </>
   )
 }
