@@ -327,6 +327,29 @@ h4 {
 }
 
 /* ---- filmstrip ---- */
+.filmstrip-wrap {
+  position: relative;
+}
+
+.filmstrip-toolbar {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 5;
+  background: rgba(35, 38, 43, 0.92);
+  border: 1px solid var(--border);
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.filmstrip-toolbar button {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .filmstrip {
   height: 118px;
   overflow-x: auto;

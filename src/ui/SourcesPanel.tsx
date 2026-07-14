@@ -124,6 +124,21 @@ export function SourcesPanel() {
                 onChange={(e) => useStore.getState().updateSource(s.id, { name: e.target.value })}
               />
               <span className="muted">{c.withGps}/{c.total}</span>
+              <button
+                className="remove"
+                title="Select all photos from this source (then apply a position method in the panel on the right)"
+                onClick={() => {
+                  const store = useStore.getState()
+                  const ids = Object.values(store.photos)
+                    .filter((p) => p.sourceId === s.id)
+                    .map((p) => p.id)
+                  store.setSelection(ids)
+                  if (ids.length > 0) store.setActivePhoto(ids[0])
+                  store.notify('info', `Selected ${ids.length} photo(s) from "${s.name}"`)
+                }}
+              >
+                ☑
+              </button>
               <button className="remove" title="Remove source (files are untouched)" onClick={() => useStore.getState().removeSource(s.id)}>×</button>
             </div>
             <div className="source-row">

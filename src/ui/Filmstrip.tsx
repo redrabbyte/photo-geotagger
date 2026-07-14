@@ -20,6 +20,8 @@ export function Filmstrip() {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const [viewWidth, setViewWidth] = useState(1200)
+  // Touch-friendly multi-select: taps toggle instead of replacing selection.
+  const [multiSelect, setMultiSelect] = useState(false)
   const lastClickedRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -69,7 +71,7 @@ export function Filmstrip() {
         return
       }
     }
-    store.toggleSelected(photo.id, e.ctrlKey || e.metaKey)
+    store.toggleSelected(photo.id, e.ctrlKey || e.metaKey || multiSelect)
     lastClickedRef.current = photo.id
   }
 
@@ -78,9 +80,31 @@ export function Filmstrip() {
   }
 
   return (
-    <div
-      className="filmstrip"
-      ref={scrollRef}
+    <div className="filmstrip-wrap">
+      <div className="filmstrip-toolbar">
+        <button
+          className={multiSelect ? 'primary' : ''}
+          title="Multi-select mode: every tap adds/removes a photo from the selection (for touch screens without Ctrl/Shift)"
+          onClick={() => setMultiSelect((v) => !v)}
+        >
+          ☑ multi
+        </button>
+        {selectedIds.size > 0 && (
+          <>
+            <span className="muted small">{selectedIds.size} selected</span>
+            <button onClick={() => useStore.getState().setSelection([])}>none</button>
+          </>
+        )}
+        <button
+          title="Select all photos"
+          onClick={() => useStore.getState().setSelection(ordered.map((p) => p.id))}
+        >
+          all
+        </button>
+      </div>
+      <div
+        className="filmstrip"
+        ref={scrollRef}
       onScroll={(e) => {
         setScrollLeft(e.currentTarget.scrollLeft)
         setViewWidth(e.currentTarget.clientWidth)
@@ -117,6 +141,7 @@ export function Filmstrip() {
             </div>
           )
         })}
+        </div>
       </div>
     </div>
   )
