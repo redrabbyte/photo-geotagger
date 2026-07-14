@@ -367,10 +367,14 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
     {
       mode: store.settings.writeMode,
       backupOriginals: store.settings.backupOriginals,
+      writeCorrectedTime: store.settings.writeCorrectedTime,
       onProgress: (done, total, current) =>
         useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
     },
-    (result) => useStore.getState().markWriteResult(result.photoId, result.ok, result.target, result.error)
+    (result) =>
+      useStore
+        .getState()
+        .markWriteResult(result.photoId, result.ok, result.target, result.error, result.timeCorrection)
   )
 
   const okCount = results.filter((r) => r.ok).length

@@ -29,12 +29,37 @@ function isoNow(now: Date): string {
   return now.toISOString().replace(/\.\d{3}Z$/, 'Z')
 }
 
-/** Generate a fresh XMP sidecar containing only GPS + ModifyDate. */
-export function generateXmpSidecar(gps: GeoPoint, now: Date = new Date()): string {
+/** ISO 8601 with explicit offset, e.g. "2026-06-01T12:34:56+02:00". */
+export function xmpDateTime(wallClockMs: number, tzOffsetMin: number): string {
+  const d = new Date(wallClockMs)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const sign = tzOffsetMin < 0 ? '-' : '+'
+  const abs = Math.abs(tzOffsetMin)
+  return (
+    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` +
+    `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}` +
+    `${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
+  )
+}
+
+export interface SidecarTimeCorrection {
+  wallClockMs: number
+  tzOffsetMin: number
+}
+
+/** Generate a fresh XMP sidecar containing GPS (+ optional corrected time) + ModifyDate. */
+export function generateXmpSidecar(
+  gps: GeoPoint,
+  now: Date = new Date(),
+  time?: SidecarTimeCorrection
+): string {
+  const timeAttr = time
+    ? `\n   exif:DateTimeOriginal="${xmpDateTime(time.wallClockMs, time.tzOffsetMin)}"`
+    : ''
   return XMP_TEMPLATE(
     degToXmpCoordinate(gps.lat, true),
     degToXmpCoordinate(gps.lon, false),
-    altAttributes(gps.ele),
+    altAttributes(gps.ele) + timeAttr,
     isoNow(now)
   )
 }
@@ -73,7 +98,12 @@ function attributeByLocalName(el: Element, localName: string): string | undefine
  * Throws if the existing content is not parseable XMP — the caller must then
  * refuse to overwrite the file.
  */
-export function mergeGpsIntoXmp(existingXml: string, gps: GeoPoint, parser: DOMParser = new DOMParser()): string {
+export function mergeGpsIntoXmp(
+  existingXml: string,
+  gps: GeoPoint,
+  parser: DOMParser = new DOMParser(),
+  time?: SidecarTimeCorrection
+): string {
   const doc = parser.parseFromString(existingXml, 'application/xml')
   if (doc.querySelector('parsererror')) {
     throw new Error('Existing sidecar is not valid XML')
@@ -93,6 +123,7 @@ export function mergeGpsIntoXmp(existingXml: string, gps: GeoPoint, parser: DOMP
     GPSLongitude: degToXmpCoordinate(gps.lon, false),
     GPSAltitude: gps.ele !== undefined ? `${Math.round(Math.abs(gps.ele) * 100)}/100` : undefined,
     GPSAltitudeRef: gps.ele !== undefined ? (gps.ele < 0 ? '1' : '0') : undefined,
+    DateTimeOriginal: time ? xmpDateTime(time.wallClockMs, time.tzOffsetMin) : undefined,
   }
 
   for (const [local, value] of Object.entries(gpsProps)) {

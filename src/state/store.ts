@@ -54,6 +54,8 @@ export interface AssignSummary {
 interface AppSettings {
   writeMode: WriteMode
   backupOriginals: boolean
+  /** Also write the clock-corrected capture time + timezone into files. */
+  writeCorrectedTime: boolean
   match: MatchSettings
 }
 
@@ -97,7 +99,13 @@ export interface AppState {
   clearAssignment(ids: string[]): void
   setManualPosition(id: string, point: GeoPoint, onTrackId?: string): void
   markWriting(ids: string[]): void
-  markWriteResult(photoId: string, ok: boolean, target?: 'exif' | 'sidecar', error?: string): void
+  markWriteResult(
+    photoId: string,
+    ok: boolean,
+    target?: 'exif' | 'sidecar',
+    error?: string,
+    timeCorrection?: { wallClockMs: number; tzOffsetMin: number }
+  ): void
   setWriteProgress(progress?: { done: number; total: number; current: string }): void
   setSettings(patch: Partial<AppSettings>): void
   setSnapToTrack(snap: boolean): void
@@ -156,6 +164,7 @@ export const useStore = create<AppState>((set, get) => ({
   settings: {
     writeMode: 'safe',
     backupOriginals: true,
+    writeCorrectedTime: false,
     match: DEFAULT_MATCH_SETTINGS,
   },
   scanning: false,
@@ -336,18 +345,26 @@ export const useStore = create<AppState>((set, get) => ({
     })
   },
 
-  markWriteResult(photoId, ok, target, error) {
+  markWriteResult(photoId, ok, target, error, timeCorrection) {
     set((s) => {
       const p = s.photos[photoId]
       if (!p) return s
-      const updated: Photo = ok
-        ? {
-            ...p,
-            writeState: 'written',
-            writeTarget: target,
-            writeError: undefined,
-            meta: p.meta && p.assignment ? { ...p.meta, originalGps: p.assignment.point } : p.meta,
+      let meta = p.meta
+      if (ok && meta && p.assignment) {
+        meta = { ...meta, originalGps: p.assignment.point }
+        if (timeCorrection) {
+          // The file now carries the corrected wall clock + timezone; the
+          // source's offset must no longer be applied to this photo.
+          meta = {
+            ...meta,
+            captureLocalMs: timeCorrection.wallClockMs,
+            tzOffsetMin: timeCorrection.tzOffsetMin,
+            timeCorrected: true,
           }
+        }
+      }
+      const updated: Photo = ok
+        ? { ...p, writeState: 'written', writeTarget: target, writeError: undefined, meta }
         : { ...p, writeState: 'write-error', writeError: error }
       return { photos: { ...s.photos, [photoId]: updated } }
     })

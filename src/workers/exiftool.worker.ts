@@ -27,8 +27,22 @@ const wasmFetch =(...args: unknown[]): Promise<Response> => {
   return fetch(input, init)
 }
 
+export interface WorkerTimeCorrection {
+  /** "YYYY:MM:DD HH:MM:SS" */
+  exifDateTime: string
+  /** "±HH:MM" */
+  tzOffset: string
+}
+
 export type ExiftoolRequest =
-  | { type: 'write-gps'; requestId: number; fileName: string; bytes: ArrayBuffer; gps: GeoPoint }
+  | {
+      type: 'write-gps'
+      requestId: number
+      fileName: string
+      bytes: ArrayBuffer
+      gps: GeoPoint
+      timeCorrection?: WorkerTimeCorrection
+    }
   | { type: 'inspect'; requestId: number; fileName: string; bytes: ArrayBuffer }
 
 export type ExiftoolResponse =
@@ -36,7 +50,12 @@ export type ExiftoolResponse =
   | { type: 'result'; requestId: number; ok: true; text: string }
   | { type: 'result'; requestId: number; ok: false; error: string }
 
-async function writeGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Promise<ArrayBuffer> {
+async function writeGps(
+  fileName: string,
+  bytes: ArrayBuffer,
+  gps: GeoPoint,
+  timeCorrection?: WorkerTimeCorrection
+): Promise<ArrayBuffer> {
   const input = { name: fileName, data: new Uint8Array(bytes) }
   const tags: Record<string, string | number> = {
     GPSVersionID: '2.3.0.0',
@@ -48,6 +67,12 @@ async function writeGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Pr
   if (gps.ele !== undefined) {
     tags.GPSAltitude = Math.abs(gps.ele)
     tags.GPSAltitudeRef = gps.ele < 0 ? 1 : 0
+  }
+  if (timeCorrection) {
+    tags.DateTimeOriginal = timeCorrection.exifDateTime
+    tags.CreateDate = timeCorrection.exifDateTime
+    tags.OffsetTimeOriginal = timeCorrection.tzOffset
+    tags.OffsetTimeDigitized = timeCorrection.tzOffset
   }
 
   const result = await writeMetadata(input, tags, { fetch: wasmFetch })
@@ -101,7 +126,7 @@ self.onmessage = async (event: MessageEvent<ExiftoolRequest>) => {
   const msg = event.data
   try {
     if (msg.type === 'write-gps') {
-      const out = await writeGps(msg.fileName, msg.bytes, msg.gps)
+      const out = await writeGps(msg.fileName, msg.bytes, msg.gps, msg.timeCorrection)
       postMessage(
         { type: 'result', requestId: msg.requestId, ok: true, bytes: out } satisfies ExiftoolResponse,
         { transfer: [out] }

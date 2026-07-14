@@ -23,13 +23,64 @@ function toPiexifRational(r: { num: number; den: number }): [number, number] {
   return [r.num, r.den]
 }
 
+// piexifjs predates the EXIF 2.31 OffsetTime* tags — register them so
+// dump() knows their type. IDs: 0x9010..0x9012.
+const OFFSET_TIME = 36880
+const OFFSET_TIME_ORIGINAL = 36881
+const OFFSET_TIME_DIGITIZED = 36882
+{
+  const tags = (piexif as unknown as { TAGS: Record<string, Record<number, { name: string; type: string }>> }).TAGS
+  tags['Exif'][OFFSET_TIME] = { name: 'OffsetTime', type: 'Ascii' }
+  tags['Exif'][OFFSET_TIME_ORIGINAL] = { name: 'OffsetTimeOriginal', type: 'Ascii' }
+  tags['Exif'][OFFSET_TIME_DIGITIZED] = { name: 'OffsetTimeDigitized', type: 'Ascii' }
+}
+
+export interface TimeCorrection {
+  /** Corrected wall-clock capture time as epoch ms (interpreted as UTC fields). */
+  wallClockMs: number
+  /** Timezone the wall clock is in, minutes east of UTC. */
+  tzOffsetMin: number
+}
+
+/** "YYYY:MM:DD HH:MM:SS" from a wall-clock-as-UTC millisecond value. */
+export function formatExifDateTime(wallClockMs: number): string {
+  const d = new Date(wallClockMs)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}:${p(d.getUTCMonth() + 1)}:${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+}
+
+/** "±HH:MM" for EXIF OffsetTime* tags. */
+export function formatTzOffset(min: number): string {
+  const sign = min < 0 ? '-' : '+'
+  const abs = Math.abs(min)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
+}
+
 /**
  * Insert GPS coordinates into a JPEG's EXIF, preserving all other metadata
- * and the image data (no recompression). Returns the new file bytes.
+ * and the image data (no recompression). Optionally rewrites the capture
+ * time (clock correction). Returns the new file bytes.
  */
-export function insertGpsIntoJpeg(jpegBytes: ArrayBuffer, gps: GeoPoint, capturedUtc?: number): Uint8Array {
+export function insertGpsIntoJpeg(
+  jpegBytes: ArrayBuffer,
+  gps: GeoPoint,
+  capturedUtc?: number,
+  timeCorrection?: TimeCorrection
+): Uint8Array {
   const dataStr = bufferToBinaryString(jpegBytes)
   const exifObj = piexif.load(dataStr)
+
+  if (timeCorrection) {
+    const exifIfd: Record<number, unknown> = exifObj['Exif'] ?? {}
+    const dateTime = formatExifDateTime(timeCorrection.wallClockMs)
+    const tz = formatTzOffset(timeCorrection.tzOffsetMin)
+    exifIfd[piexif.ExifIFD.DateTimeOriginal] = dateTime
+    exifIfd[piexif.ExifIFD.DateTimeDigitized] = dateTime
+    exifIfd[OFFSET_TIME_ORIGINAL] = tz
+    exifIfd[OFFSET_TIME_DIGITIZED] = tz
+    exifObj['Exif'] = exifIfd
+  }
 
   const gpsIfd: Record<number, unknown> = exifObj['GPS'] ?? {}
   gpsIfd[piexif.GPSIFD.GPSVersionID] = [2, 3, 0, 0]
@@ -62,6 +113,8 @@ export interface JpegValidationInput {
   originalSize: number
   gps: GeoPoint
   originalDateTimeOriginal?: unknown
+  /** When a time correction was written, the wall-clock ms it must now show. */
+  expectedDateTimeMs?: number
 }
 
 /**
@@ -85,10 +138,25 @@ export async function validateJpegOutput(bytes: Uint8Array, input: JpegValidatio
   if (Math.abs(lat - input.gps.lat) > 1e-4 || Math.abs(lon - input.gps.lon) > 1e-4) {
     throw new Error('GPS in rewritten JPEG does not match the assigned position')
   }
-  const origDto = input.originalDateTimeOriginal
-  if (origDto instanceof Date && parsed?.DateTimeOriginal instanceof Date) {
-    if (origDto.getTime() !== parsed.DateTimeOriginal.getTime()) {
-      throw new Error('DateTimeOriginal changed during rewrite — refusing to overwrite')
+  const newDto = parsed?.DateTimeOriginal
+  if (input.expectedDateTimeMs !== undefined) {
+    // exifr revives the wall clock in the machine's local zone; compare fields.
+    if (!(newDto instanceof Date)) {
+      throw new Error('Corrected capture time missing from rewritten JPEG')
+    }
+    const wallClock = Date.UTC(
+      newDto.getFullYear(), newDto.getMonth(), newDto.getDate(),
+      newDto.getHours(), newDto.getMinutes(), newDto.getSeconds()
+    )
+    if (Math.abs(wallClock - input.expectedDateTimeMs) > 1000) {
+      throw new Error('Corrected capture time in rewritten JPEG does not match')
+    }
+  } else {
+    const origDto = input.originalDateTimeOriginal
+    if (origDto instanceof Date && newDto instanceof Date) {
+      if (origDto.getTime() !== newDto.getTime()) {
+        throw new Error('DateTimeOriginal changed during rewrite — refusing to overwrite')
+      }
     }
   }
 }

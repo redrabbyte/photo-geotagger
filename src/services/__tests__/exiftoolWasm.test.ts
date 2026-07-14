@@ -34,6 +34,9 @@ describe('exiftool wasm', () => {
         GPSLatitudeRef: 'N',
         GPSLongitude: Math.abs(GPS.lon),
         GPSLongitudeRef: 'E',
+        // Clock correction: +1h and explicit timezone.
+        DateTimeOriginal: '2026:06:01 13:34:56',
+        OffsetTimeOriginal: '+02:00',
       },
       { fetch: nodeFetch }
     )
@@ -50,7 +53,7 @@ describe('exiftool wasm', () => {
     const verify = await parseMetadata<Array<Record<string, unknown>>>(
       { name: 'test.jpg', data: outBytes },
       {
-        args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude', '-DateTimeOriginal'],
+        args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude', '-DateTimeOriginal', '-OffsetTimeOriginal'],
         transform: (s) => JSON.parse(s) as Array<Record<string, unknown>>,
         fetch: nodeFetch,
       }
@@ -60,6 +63,7 @@ describe('exiftool wasm', () => {
     const entry = verify.data[0]
     expect(entry.GPSLatitude as number).toBeCloseTo(GPS.lat, 4)
     expect(entry.GPSLongitude as number).toBeCloseTo(GPS.lon, 4)
-    expect(entry.DateTimeOriginal).toBe('2026:06:01 12:34:56')
+    expect(entry.DateTimeOriginal).toBe('2026:06:01 13:34:56')
+    expect(entry.OffsetTimeOriginal).toBe('+02:00')
   })
 })

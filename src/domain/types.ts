@@ -40,6 +40,11 @@ export interface PhotoMeta {
    * Android's scoped-storage location redaction (or a metadata stripper).
    */
   gpsEmpty?: boolean
+  /**
+   * The corrected capture time has been written into the file; the source's
+   * clock offset must no longer be applied to this photo.
+   */
+  timeCorrected?: boolean
   cameraModel?: string
   width?: number
   height?: number
@@ -135,7 +140,9 @@ export type GpsStatus = 'original' | 'assigned' | 'manual' | 'none'
 export function effectiveUtcMs(photo: Photo, source: Source): number | undefined {
   if (!photo.meta) return undefined
   const tz = photo.meta.tzOffsetMin ?? source.assumedTzOffsetMin
-  return photo.meta.captureLocalMs - tz * 60_000 + source.clockOffsetMs
+  // Once the corrected time is baked into the file, the offset is spent.
+  const offset = photo.meta.timeCorrected ? 0 : source.clockOffsetMs
+  return photo.meta.captureLocalMs - tz * 60_000 + offset
 }
 
 export function gpsStatus(photo: Photo): GpsStatus {

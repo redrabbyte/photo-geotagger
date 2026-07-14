@@ -1,7 +1,13 @@
 import exifr from 'exifr'
 import type { GeoPoint, Photo, Source } from '../domain/types'
 import { generateXmpSidecar, mergeGpsIntoXmp, sidecarNameFor } from '../domain/xmp'
-import { insertGpsIntoJpeg, validateJpegOutput } from './exif/writeJpeg'
+import {
+  formatExifDateTime,
+  formatTzOffset,
+  insertGpsIntoJpeg,
+  validateJpegOutput,
+  type TimeCorrection,
+} from './exif/writeJpeg'
 import { backupOriginal, writeFileBytes } from './fs/safeWrite'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
@@ -13,12 +19,33 @@ export interface WriteJobResult {
   ok: boolean
   target?: 'exif' | 'sidecar'
   error?: string
+  /** The corrected capture time was written into the file. */
+  timeCorrection?: TimeCorrection
 }
 
 export interface WriteOptions {
   mode: WriteMode
   backupOriginals: boolean
+  /** Also write the clock-corrected capture time + timezone into the files. */
+  writeCorrectedTime?: boolean
   onProgress?: (done: number, total: number, current: string) => void
+}
+
+/**
+ * Compute the capture-time correction for a photo, or undefined when there is
+ * nothing to correct: no EXIF time, already corrected, or the source clock is
+ * right and the file already carries a timezone.
+ */
+export function timeCorrectionFor(photo: Photo, source: Source): TimeCorrection | undefined {
+  const meta = photo.meta
+  if (!meta || meta.timeSource !== 'exif' || meta.timeCorrected) return undefined
+  const needsShift = source.clockOffsetMs !== 0
+  const needsTz = meta.tzOffsetMin === undefined
+  if (!needsShift && !needsTz) return undefined
+  return {
+    wallClockMs: meta.captureLocalMs + source.clockOffsetMs,
+    tzOffsetMin: meta.tzOffsetMin ?? source.assumedTzOffsetMin,
+  }
 }
 
 /** Lazy singleton for the ExifTool worker; the 25 MB WASM loads on first use. */
@@ -65,8 +92,16 @@ function exiftoolRequest(
   })
 }
 
-async function exiftoolWriteGps(fileName: string, bytes: ArrayBuffer, gps: GeoPoint): Promise<ArrayBuffer> {
-  const result = await exiftoolRequest({ type: 'write-gps', fileName, bytes, gps }, [bytes])
+async function exiftoolWriteGps(
+  fileName: string,
+  bytes: ArrayBuffer,
+  gps: GeoPoint,
+  time?: TimeCorrection
+): Promise<ArrayBuffer> {
+  const timeCorrection = time
+    ? { exifDateTime: formatExifDateTime(time.wallClockMs), tzOffset: formatTzOffset(time.tzOffsetMin) }
+    : undefined
+  const result = await exiftoolRequest({ type: 'write-gps', fileName, bytes, gps, timeCorrection }, [bytes])
   if (!('bytes' in result)) throw new Error('Unexpected worker response')
   return result.bytes
 }
@@ -78,7 +113,13 @@ export async function exiftoolInspect(fileName: string, bytes: ArrayBuffer): Pro
   return result.text
 }
 
-async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {
+async function writeJpegInPlace(
+  photo: Photo,
+  source: Source,
+  gps: GeoPoint,
+  backup: boolean,
+  time?: TimeCorrection
+): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
@@ -91,11 +132,12 @@ async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, bac
     originalDto = undefined
   }
 
-  const rewritten = insertGpsIntoJpeg(original, gps, photo.assignment?.effectiveUtcMs)
+  const rewritten = insertGpsIntoJpeg(original, gps, photo.assignment?.effectiveUtcMs, time)
   await validateJpegOutput(rewritten, {
     originalSize: original.byteLength,
     gps,
     originalDateTimeOriginal: originalDto,
+    expectedDateTimeMs: time?.wallClockMs,
   })
 
   // Individually-picked files have no folder handle: backups are impossible.
@@ -106,7 +148,7 @@ async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, bac
   await writeFileBytes(photo.fileHandle, rewritten)
 }
 
-async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint): Promise<void> {
+async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint, time?: TimeCorrection): Promise<void> {
   if (!source.dirHandle) {
     throw new Error(
       'XMP sidecars need access to the containing folder — add the folder as a source, or switch to ExifTool write mode'
@@ -120,10 +162,10 @@ async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint): Promis
     const existingHandle = await dir.getFileHandle(name)
     const existing = await (await existingHandle.getFile()).text()
     // Merge to preserve edits from other tools; throws on malformed XMP.
-    content = mergeGpsIntoXmp(existing, gps)
+    content = mergeGpsIntoXmp(existing, gps, undefined, time)
   } catch (err) {
     if (err instanceof DOMException && err.name === 'NotFoundError') {
-      content = generateXmpSidecar(gps)
+      content = generateXmpSidecar(gps, new Date(), time)
     } else if (err instanceof Error && err.message.includes('not valid XML')) {
       throw new Error(`Existing sidecar ${name} is malformed — not overwriting it`)
     } else if (err instanceof Error && err.message.includes('rdf:Description')) {
@@ -137,12 +179,18 @@ async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint): Promis
   await writeFileBytes(handle, content)
 }
 
-async function writeViaExiftool(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {
+async function writeViaExiftool(
+  photo: Photo,
+  source: Source,
+  gps: GeoPoint,
+  backup: boolean,
+  time?: TimeCorrection
+): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
   // Worker verifies GPS round-trip and size sanity before returning.
-  const rewritten = await exiftoolWriteGps(photo.fileName, original, gps)
+  const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time)
 
   if (backup && source.dirHandle) {
     const dir = await directoryOf(source.dirHandle, photo.relativePath)
@@ -156,20 +204,25 @@ async function writeViaExiftool(photo: Photo, source: Source, gps: GeoPoint, bac
  * Mode 'safe': JPEG in place (pure JS), everything else gets an XMP sidecar.
  * Mode 'exiftool': every format written in place via ExifTool WASM.
  */
-export async function writePhoto(photo: Photo, source: Source, options: WriteOptions): Promise<'exif' | 'sidecar'> {
+export async function writePhoto(
+  photo: Photo,
+  source: Source,
+  options: WriteOptions
+): Promise<{ target: 'exif' | 'sidecar'; timeCorrection?: TimeCorrection }> {
   const gps = photo.assignment?.point
   if (!gps) throw new Error('Photo has no assigned position')
+  const time = options.writeCorrectedTime ? timeCorrectionFor(photo, source) : undefined
 
   if (options.mode === 'exiftool') {
-    await writeViaExiftool(photo, source, gps, options.backupOriginals)
-    return 'exif'
+    await writeViaExiftool(photo, source, gps, options.backupOriginals, time)
+    return { target: 'exif', timeCorrection: time }
   }
   if (photo.kind === 'jpeg') {
-    await writeJpegInPlace(photo, source, gps, options.backupOriginals)
-    return 'exif'
+    await writeJpegInPlace(photo, source, gps, options.backupOriginals, time)
+    return { target: 'exif', timeCorrection: time }
   }
-  await writeSidecar(photo, source, gps)
-  return 'sidecar'
+  await writeSidecar(photo, source, gps, time)
+  return { target: 'sidecar', timeCorrection: time }
 }
 
 /** Sequential batch write. Continues past per-file errors; reports each result. */
@@ -189,8 +242,8 @@ export async function writeBatch(
       result = { photoId: photo.id, ok: false, error: 'Unknown source' }
     } else {
       try {
-        const target = await writePhoto(photo, source, options)
-        result = { photoId: photo.id, ok: true, target }
+        const { target, timeCorrection } = await writePhoto(photo, source, options)
+        result = { photoId: photo.id, ok: true, target, timeCorrection }
       } catch (err) {
         result = { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
       }

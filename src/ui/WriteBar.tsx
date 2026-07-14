@@ -57,6 +57,19 @@ export function WriteBar() {
         Backup originals
       </label>
 
+      <label
+        className="checkbox-row"
+        title="Also write the corrected capture time into the files: DateTimeOriginal shifted by the source's clock offset, plus the timezone (OffsetTimeOriginal). Only touches files whose source has a correction or that lack a timezone."
+      >
+        <input
+          type="checkbox"
+          checked={settings.writeCorrectedTime}
+          onChange={(e) => useStore.getState().setSettings({ writeCorrectedTime: e.target.checked })}
+          disabled={writing}
+        />
+        Write corrected time
+      </label>
+
       <span className="spacer" />
 
       {writing ? (
