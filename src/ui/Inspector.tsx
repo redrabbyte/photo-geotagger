@@ -32,7 +32,7 @@ export function Inspector() {
   const [exifDump, setExifDump] = useState<{ fileName: string; text: string } | 'loading' | undefined>()
 
   useEffect(() => {
-    if (activePhotoId) ensureThumbs([activePhotoId])
+    if (activePhotoId) ensureThumbs([activePhotoId], true)
   }, [activePhotoId])
 
   const showExifDetails = async () => {

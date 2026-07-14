@@ -41,7 +41,15 @@ function getScanClient(): ScanClient {
     scanClient = new ScanClient({
       onMeta: (id, meta, sizeBytes, lastModified) =>
         queueUpdate({ id, kind: 'meta', meta, sizeBytes, lastModified }),
-      onThumb: (id, url) => queueUpdate({ id, kind: 'thumb', url }),
+      onThumb: (id, url) => {
+        // Thumbnails are on-demand and user-facing: show them immediately.
+        queueUpdate({ id, kind: 'thumb', url })
+        if (flushTimer) {
+          clearTimeout(flushTimer)
+          flushTimer = undefined
+        }
+        flushUpdates()
+      },
       onThumbFailed: (id) => queueUpdate({ id, kind: 'thumb-failed' }),
       onError: (id, message) => queueUpdate({ id, kind: 'error', message }),
       onIdle: () => {
@@ -60,17 +68,19 @@ const thumbsRequested = new Set<string>()
  * inspector photo). Thumbnails are generated lazily so metadata scanning of
  * a large folder finishes first.
  */
-export function ensureThumbs(ids: string[]): void {
+export function ensureThumbs(ids: string[], priority = false): void {
   const store = useStore.getState()
   const jobs = []
   for (const id of ids) {
-    if (thumbsRequested.has(id)) continue
+    // Priority requests re-enqueue even if already queued normally — the
+    // selected photo must not wait behind the regular queue.
+    if (thumbsRequested.has(id) && !priority) continue
     const p = store.photos[id]
     if (!p || p.thumbUrl || !p.fileHandle) continue
     thumbsRequested.add(id)
     jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind })
   }
-  if (jobs.length > 0) getScanClient().enqueueThumbs(jobs)
+  if (jobs.length > 0) getScanClient().enqueueThumbs(jobs, priority)
 }
 
 async function persistCurrentSources(): Promise<void> {
@@ -94,12 +104,27 @@ async function ingestSource(source: Source): Promise<void> {
   if (!source.dirHandle) return
   const scan = await enumerateFolder(source.dirHandle)
 
-  // Size/mtime are filled in by the scan worker — reading every file here
-  // would block the UI on large folders before anything shows up.
   const photos: Photo[] = []
   for (const f of scan.photos) {
     const record = makePhotoRecord(source.id, f.handle, f.relativePath, f.name, 0, 0)
     if (record) photos.push(record)
+  }
+  // Fetch file mtimes up front (a stat, not a content read; chunked so a big
+  // folder resolves in well under a second): every photo gets a provisional
+  // timeline position immediately, refined once its EXIF time is scanned.
+  const CHUNK = 200
+  for (let i = 0; i < photos.length; i += CHUNK) {
+    await Promise.all(
+      photos.slice(i, i + CHUNK).map(async (p) => {
+        try {
+          const file = await p.fileHandle!.getFile()
+          p.lastModified = file.lastModified
+          p.sizeBytes = file.size
+        } catch {
+          // stat failed — the scan worker will retry via getFile anyway
+        }
+      })
+    )
   }
   store.addSource(source, photos)
 

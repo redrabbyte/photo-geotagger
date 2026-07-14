@@ -10,7 +10,9 @@ export interface ScanCallbacks {
 }
 
 const BATCH_SIZE = 24
-const THUMB_BATCH_SIZE = 8
+// Small batches keep the wait short before a priority thumb can jump in
+// (a worker must finish its current batch first).
+const THUMB_BATCH_SIZE = 4
 
 /**
  * Manages a pool of scan workers. Metadata jobs always run before thumbnail
@@ -21,6 +23,8 @@ export class ScanClient {
   private workers: Worker[] = []
   private metaQueue: ScanJob[] = []
   private thumbQueue: ScanJob[] = []
+  /** User-facing thumbnails (selected photo) — served before everything else. */
+  private priorityThumbQueue: ScanJob[] = []
   private busy: Set<Worker> = new Set()
   private callbacks: ScanCallbacks
 
@@ -45,14 +49,18 @@ export class ScanClient {
     this.pump()
   }
 
-  /** Queue thumbnail generation (runs when no metadata is pending). */
-  enqueueThumbs(jobs: ScanJob[]): void {
-    this.thumbQueue.push(...jobs)
+  /**
+   * Queue thumbnail generation. Normal jobs run when no metadata is pending;
+   * priority jobs (the photo the user just selected) jump ahead of everything.
+   */
+  enqueueThumbs(jobs: ScanJob[], priority = false): void {
+    if (priority) this.priorityThumbQueue.push(...jobs)
+    else this.thumbQueue.push(...jobs)
     this.pump()
   }
 
   get pending(): number {
-    return this.metaQueue.length + this.thumbQueue.length
+    return this.metaQueue.length + this.thumbQueue.length + this.priorityThumbQueue.length
   }
 
   private handleMessage(worker: Worker, msg: ScanResponse): void {
@@ -80,7 +88,9 @@ export class ScanClient {
     for (const worker of this.workers) {
       if (this.busy.has(worker)) continue
       let request: ScanRequest | undefined
-      if (this.metaQueue.length > 0) {
+      if (this.priorityThumbQueue.length > 0) {
+        request = { type: 'thumb', jobs: this.priorityThumbQueue.splice(0, THUMB_BATCH_SIZE) }
+      } else if (this.metaQueue.length > 0) {
         request = { type: 'scan', jobs: this.metaQueue.splice(0, BATCH_SIZE) }
       } else if (this.thumbQueue.length > 0) {
         request = { type: 'thumb', jobs: this.thumbQueue.splice(0, THUMB_BATCH_SIZE) }
@@ -90,7 +100,7 @@ export class ScanClient {
       this.busy.add(worker)
       worker.postMessage(request)
     }
-    if (this.metaQueue.length === 0 && this.thumbQueue.length === 0 && this.busy.size === 0) {
+    if (this.pending === 0 && this.busy.size === 0) {
       this.callbacks.onIdle()
     }
   }
@@ -100,6 +110,7 @@ export class ScanClient {
     this.workers = []
     this.metaQueue = []
     this.thumbQueue = []
+    this.priorityThumbQueue = []
     this.busy.clear()
   }
 }

@@ -11,6 +11,8 @@ interface TimedPhoto {
   selected: boolean
   /** Photo has a position (original GPS or assigned). */
   hasPos: boolean
+  /** Not scanned yet: t is the file's mtime, refined once EXIF arrives. */
+  provisional: boolean
 }
 
 const HEIGHT = 72
@@ -40,7 +42,10 @@ export function Timeline() {
     for (const p of Object.values(photos)) {
       const src = sources[p.sourceId]
       if (!src) continue
-      const t = effectiveUtcMs(p, src)
+      // Unscanned photos appear immediately at their file mtime and move to
+      // the exact EXIF position once the scan reaches them.
+      const exact = effectiveUtcMs(p, src)
+      const t = exact ?? (p.lastModified > 0 ? p.lastModified : undefined)
       if (t === undefined) continue
       out.push({
         id: p.id,
@@ -48,6 +53,7 @@ export function Timeline() {
         color: src.color,
         selected: selectedIds.has(p.id),
         hasPos: displayPosition(p) !== undefined,
+        provisional: exact === undefined,
       })
     }
     out.sort((a, b) => a.t - b.t)
@@ -183,13 +189,14 @@ export function Timeline() {
     }
     ctx.globalAlpha = 1
 
-    // Photo ticks: dim without a position, green cap when GPS is present.
+    // Photo ticks: dim without a position, short while unscanned (mtime
+    // placeholder), green cap when GPS is present.
     for (const p of timed) {
       const x = xOf(p.t)
       if (x < -2 || x > width + 2) continue
-      ctx.globalAlpha = p.hasPos ? 1 : 0.4
+      ctx.globalAlpha = p.provisional ? 0.25 : p.hasPos ? 1 : 0.4
       ctx.fillStyle = p.color
-      ctx.fillRect(x - 1, TICK_TOP, 2, p.selected ? 26 : 18)
+      ctx.fillRect(x - 1, TICK_TOP, 2, p.provisional ? 10 : p.selected ? 26 : 18)
       ctx.globalAlpha = 1
       if (p.hasPos) {
         ctx.fillStyle = '#6fca7c'
