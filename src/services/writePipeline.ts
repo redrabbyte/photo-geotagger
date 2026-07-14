@@ -78,8 +78,11 @@ export async function exiftoolInspect(fileName: string, bytes: ArrayBuffer): Pro
   return result.text
 }
 
+const READ_ONLY_ERROR =
+  'This source was loaded read-only (classic folder input) — re-add it via "+ Folder" to write'
+
 async function writeJpegInPlace(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {
-  if (!photo.fileHandle) throw new Error('Missing file handle')
+  if (!photo.fileHandle) throw new Error(READ_ONLY_ERROR)
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
 
@@ -138,7 +141,7 @@ async function writeSidecar(photo: Photo, source: Source, gps: GeoPoint): Promis
 }
 
 async function writeViaExiftool(photo: Photo, source: Source, gps: GeoPoint, backup: boolean): Promise<void> {
-  if (!photo.fileHandle) throw new Error('Missing file handle')
+  if (!photo.fileHandle) throw new Error(READ_ONLY_ERROR)
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
   // Worker verifies GPS round-trip and size sanity before returning.

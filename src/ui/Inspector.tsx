@@ -30,10 +30,10 @@ export function Inspector() {
   const [exifDump, setExifDump] = useState<{ fileName: string; text: string } | 'loading' | undefined>()
 
   const showExifDetails = async () => {
-    if (!active?.fileHandle) return
+    if (!active || (!active.fileHandle && !active.file)) return
     setExifDump('loading')
     try {
-      const file = await active.fileHandle.getFile()
+      const file = active.file ?? (await active.fileHandle!.getFile())
       const text = await exiftoolInspect(active.fileName, await file.arrayBuffer())
       setExifDump({ fileName: active.fileName, text })
     } catch (err) {
@@ -164,7 +164,7 @@ export function Inspector() {
       <p className="muted small">Drag any marker on the map to set a position manually.</p>
 
       <div className="inspector-actions">
-        {active && selectedCount === 1 && active.fileHandle && (
+        {active && selectedCount === 1 && (active.fileHandle || active.file) && (
           <button
             title="Run ExifTool (WASM, ~25 MB download on first use) and show every metadata tag in this file — useful when GPS seems missing"
             onClick={() => void showExifDetails()}

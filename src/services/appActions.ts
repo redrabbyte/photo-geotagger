@@ -1,5 +1,5 @@
 import type { Photo, Source, Track } from '../domain/types'
-import { isDirty } from '../domain/types'
+import { isDirty, isGpxName, photoKindFromName } from '../domain/types'
 import { parseGpx, GpxParseError } from '../domain/parseGpx'
 import { enumerateFolder, fsaSupported } from './fs/sources'
 import {
@@ -190,6 +190,80 @@ export async function addFilesFlow(): Promise<void> {
   store.setScanning(true)
   getScanClient().enqueue(photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind })))
   store.notify('info', `Added ${photos.length} photo(s)${skipped ? `, skipped ${skipped} unsupported file(s)` : ''}`)
+}
+
+/**
+ * TEST PATH: ingest a folder picked via classic <input type="file"
+ * webkitdirectory>. Files arrive as one-shot File snapshots without handles,
+ * so this source is read-only — writing GPS back is not possible.
+ */
+export async function addClassicFolderFlow(files: FileList | File[]): Promise<void> {
+  const store = useStore.getState()
+  const list = Array.from(files)
+  if (list.length === 0) return
+
+  const firstRel = (list[0] as File & { webkitRelativePath?: string }).webkitRelativePath
+  const folderName = firstRel?.split('/')[0] || 'Classic folder'
+  const existing = Object.keys(store.sources).length
+  const source: Source = {
+    id: nextSourceId(),
+    name: `${folderName} (read-only)`,
+    color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
+    clockOffsetMs: 0,
+    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
+  }
+
+  const photos: Photo[] = []
+  const gpxFiles: File[] = []
+  let skipped = 0
+  for (const file of list) {
+    const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+    if (isGpxName(file.name)) {
+      gpxFiles.push(file)
+      continue
+    }
+    const kind = photoKindFromName(file.name)
+    if (!kind) {
+      skipped++
+      continue
+    }
+    photos.push({
+      id: `${source.id}:${rel}`,
+      sourceId: source.id,
+      fileName: file.name,
+      relativePath: rel,
+      kind,
+      sizeBytes: file.size,
+      lastModified: file.lastModified,
+      file,
+      scanState: 'pending',
+      writeState: 'clean',
+    })
+  }
+
+  if (photos.length === 0 && gpxFiles.length === 0) {
+    store.notify('error', 'No supported photos or GPX files in that folder.')
+    return
+  }
+  store.addSource(source, photos)
+
+  for (const gpx of gpxFiles) {
+    try {
+      const tracks = parseGpx(await gpx.text(), gpx.name, () => nextTrackId())
+      useStore.getState().addTracks(tracks)
+    } catch (err) {
+      store.notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${gpx.name}`)
+    }
+  }
+
+  if (photos.length > 0) {
+    store.setScanning(true)
+    getScanClient().enqueue(photos.map((p) => ({ id: p.id, file: p.file!, kind: p.kind })))
+  }
+  store.notify(
+    'info',
+    `${source.name}: ${photos.length} photos${gpxFiles.length ? `, ${gpxFiles.length} GPX` : ''}${skipped ? `, ${skipped} skipped` : ''} — read-only (test mode, no write-back)`
+  )
 }
 
 export interface RestorableSource {
