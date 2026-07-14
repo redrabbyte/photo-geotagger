@@ -29,13 +29,38 @@ export interface WriteOptions {
   backupOriginals: boolean
   /** Also write the clock-corrected capture time + timezone into the files. */
   writeCorrectedTime?: boolean
-  /** Photos written concurrently (>1 only useful for ExifTool RAW writes). */
+  /** Photos written concurrently (safe mode: hides fixed FSA latency; ExifTool: match worker pool). */
   concurrency?: number
   /** ExifTool mode: photos without an assignment fall back to sidecar GPS. */
   embedSidecarGps?: boolean
   /** Checked between files: when true, no further file is started. */
   shouldStop?: () => boolean
   onProgress?: (done: number, total: number, current: string) => void
+}
+
+/**
+ * Per-batch cache of resolved directory handles, keyed by source + folder.
+ * Every FSA handle lookup is an IPC round trip; without the cache each photo
+ * re-walks its folder path from the source root.
+ */
+export type DirCache = Map<string, Promise<FileSystemDirectoryHandle>>
+
+export function directoryOfCached(
+  root: FileSystemDirectoryHandle,
+  sourceId: string,
+  relativePath: string,
+  dirs?: DirCache
+): Promise<FileSystemDirectoryHandle> {
+  if (!dirs) return directoryOf(root, relativePath)
+  const key = `${sourceId}\u0000${relativePath.split('/').slice(0, -1).join('/')}`
+  let entry = dirs.get(key)
+  if (!entry) {
+    entry = directoryOf(root, relativePath)
+    // Don't cache failures — a later photo in the same folder may retry.
+    entry.catch(() => dirs.delete(key))
+    dirs.set(key, entry)
+  }
+  return entry
 }
 
 /**
@@ -141,7 +166,8 @@ async function writeJpegInPlace(
   source: Source,
   gps: GeoPoint,
   backup: boolean,
-  time?: TimeCorrection
+  time?: TimeCorrection,
+  dirs?: DirCache
 ): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
   const file = await photo.fileHandle.getFile()
@@ -165,7 +191,7 @@ async function writeJpegInPlace(
 
   // Individually-picked files have no folder handle: backups are impossible.
   if (backup && source.dirHandle) {
-    const dir = await directoryOf(source.dirHandle, photo.relativePath)
+    const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
     await backupOriginal(dir, photo.fileName)
   }
   await writeFileBytes(photo.fileHandle, rewritten)
@@ -175,14 +201,15 @@ async function writeSidecar(
   photo: Photo,
   source: Source,
   gps: GeoPoint | undefined,
-  time?: TimeCorrection
+  time?: TimeCorrection,
+  dirs?: DirCache
 ): Promise<void> {
   if (!source.dirHandle) {
     throw new Error(
       'XMP sidecars need access to the containing folder — add the folder as a source, or switch to ExifTool write mode'
     )
   }
-  const dir = await directoryOf(source.dirHandle, photo.relativePath)
+  const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
   const name = sidecarNameFor(photo.fileName)
 
   let content: string
@@ -212,7 +239,8 @@ async function writeViaExiftool(
   source: Source,
   gps: GeoPoint,
   backup: boolean,
-  time?: TimeCorrection
+  time?: TimeCorrection,
+  dirs?: DirCache
 ): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
   const file = await photo.fileHandle.getFile()
@@ -221,7 +249,7 @@ async function writeViaExiftool(
   const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time)
 
   if (backup && source.dirHandle) {
-    const dir = await directoryOf(source.dirHandle, photo.relativePath)
+    const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
     await backupOriginal(dir, photo.fileName)
   }
   await writeFileBytes(photo.fileHandle, new Uint8Array(rewritten))
@@ -235,7 +263,8 @@ async function writeViaExiftool(
 export async function writePhoto(
   photo: Photo,
   source: Source,
-  options: WriteOptions
+  options: WriteOptions,
+  dirs?: DirCache
 ): Promise<{ target: 'exif' | 'sidecar'; timeCorrection?: TimeCorrection }> {
   const gps = photo.assignment?.point ?? (options.embedSidecarGps ? photo.sidecarGps : undefined)
   if (!gps) throw new Error('Photo has no assigned position')
@@ -244,14 +273,14 @@ export async function writePhoto(
   // JPEGs always take the pure-JS path (~50ms, identically verified) — the
   // ExifTool WASM run (~2s/file) is reserved for formats that need it.
   if (photo.kind === 'jpeg') {
-    await writeJpegInPlace(photo, source, gps, options.backupOriginals, time)
+    await writeJpegInPlace(photo, source, gps, options.backupOriginals, time, dirs)
     return { target: 'exif', timeCorrection: time }
   }
   if (options.mode === 'exiftool') {
-    await writeViaExiftool(photo, source, gps, options.backupOriginals, time)
+    await writeViaExiftool(photo, source, gps, options.backupOriginals, time, dirs)
     return { target: 'exif', timeCorrection: time }
   }
-  await writeSidecar(photo, source, gps, time)
+  await writeSidecar(photo, source, gps, time, dirs)
   return { target: 'sidecar', timeCorrection: time }
 }
 
@@ -263,7 +292,8 @@ export async function writeTimeOnlyPhoto(
   photo: Photo,
   source: Source,
   options: WriteOptions,
-  time: TimeCorrection
+  time: TimeCorrection,
+  dirs?: DirCache
 ): Promise<'exif' | 'sidecar'> {
   if (options.mode === 'exiftool' && photo.kind !== 'jpeg') {
     if (!photo.fileHandle) throw new Error('Missing file handle')
@@ -271,7 +301,7 @@ export async function writeTimeOnlyPhoto(
     const original = await file.arrayBuffer()
     const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time)
     if (options.backupOriginals && source.dirHandle) {
-      const dir = await directoryOf(source.dirHandle, photo.relativePath)
+      const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
       await backupOriginal(dir, photo.fileName)
     }
     await writeFileBytes(photo.fileHandle, new Uint8Array(rewritten))
@@ -287,13 +317,13 @@ export async function writeTimeOnlyPhoto(
       expectedDateTimeMs: time.wallClockMs,
     })
     if (options.backupOriginals && source.dirHandle) {
-      const dir = await directoryOf(source.dirHandle, photo.relativePath)
+      const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
       await backupOriginal(dir, photo.fileName)
     }
     await writeFileBytes(photo.fileHandle, rewritten)
     return 'exif'
   }
-  await writeSidecar(photo, source, undefined, time)
+  await writeSidecar(photo, source, undefined, time, dirs)
   return 'sidecar'
 }
 
@@ -304,6 +334,7 @@ export async function writeTimeBatch(
   options: WriteOptions,
   onResult: (result: WriteJobResult) => void
 ): Promise<WriteJobResult[]> {
+  const dirs: DirCache = new Map()
   return runWriteJobs(
     photos,
     options,
@@ -313,7 +344,7 @@ export async function writeTimeBatch(
       if (!source) return { photoId: photo.id, ok: false, error: 'Unknown source' }
       if (!time) return { photoId: photo.id, ok: false, error: 'Nothing to correct' }
       try {
-        const target = await writeTimeOnlyPhoto(photo, source, options, time)
+        const target = await writeTimeOnlyPhoto(photo, source, options, time, dirs)
         return { photoId: photo.id, ok: true, target, timeCorrection: time }
       } catch (err) {
         return { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -358,6 +389,7 @@ export async function writeBatch(
   options: WriteOptions,
   onResult: (result: WriteJobResult) => void
 ): Promise<WriteJobResult[]> {
+  const dirs: DirCache = new Map()
   return runWriteJobs(
     photos,
     options,
@@ -365,7 +397,7 @@ export async function writeBatch(
       const source = sources.get(photo.sourceId)
       if (!source) return { photoId: photo.id, ok: false, error: 'Unknown source' }
       try {
-        const { target, timeCorrection } = await writePhoto(photo, source, options)
+        const { target, timeCorrection } = await writePhoto(photo, source, options, dirs)
         return { photoId: photo.id, ok: true, target, timeCorrection }
       } catch (err) {
         return { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }

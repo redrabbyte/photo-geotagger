@@ -12,7 +12,26 @@ import {
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
 import { setExiftoolPoolSize, timeCorrectionFor, writeBatch, writeTimeBatch } from './writePipeline'
-import { useStore, nextSourceId, nextTrackId, makePhotoRecord, SOURCE_COLORS, type ScanUpdate } from '../state/store'
+import {
+  useStore,
+  nextSourceId,
+  nextTrackId,
+  makePhotoRecord,
+  SOURCE_COLORS,
+  type AppSettings,
+  type ScanUpdate,
+} from '../state/store'
+
+/**
+ * Safe-mode writes are pure FSA I/O: the per-file cost is fixed browser
+ * round-trip latency (handle lookups, safe-browsing check on close), so
+ * parallelism hides it almost linearly. ExifTool writes are CPU/memory-bound
+ * WASM runs and stay limited to the worker pool size.
+ */
+function writeConcurrency(settings: AppSettings): number {
+  if (settings.writeMode === 'exiftool') return settings.parallelExiftool ? 2 : 1
+  return 6
+}
 
 let scanClient: ScanClient | undefined
 let updateBuffer: ScanUpdate[] = []
@@ -509,8 +528,8 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
     }
   }
 
-  const timeConcurrency = store.settings.writeMode === 'exiftool' && store.settings.parallelExiftool ? 2 : 1
-  setExiftoolPoolSize(timeConcurrency)
+  const timeConcurrency = writeConcurrency(store.settings)
+  setExiftoolPoolSize(store.settings.parallelExiftool ? 2 : 1)
   writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const results = await writeTimeBatch(
@@ -583,8 +602,8 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
     }
   }
 
-  const gpsConcurrency = store.settings.writeMode === 'exiftool' && store.settings.parallelExiftool ? 2 : 1
-  setExiftoolPoolSize(gpsConcurrency)
+  const gpsConcurrency = writeConcurrency(store.settings)
+  setExiftoolPoolSize(store.settings.parallelExiftool ? 2 : 1)
   writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const sourcesMap = new Map(Object.entries(store.sources))

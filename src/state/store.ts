@@ -52,7 +52,7 @@ export interface AssignSummary {
   noTime: number
 }
 
-interface AppSettings {
+export interface AppSettings {
   writeMode: WriteMode
   backupOriginals: boolean
   /** Also write the clock-corrected capture time + timezone into files. */
