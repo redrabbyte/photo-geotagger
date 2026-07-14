@@ -12,14 +12,11 @@ import { findNeighbors } from './trackIndex'
 import { lerpPoint, roundGps } from './gpsMath'
 
 export interface MatchSettings {
-  /** Never interpolate across a larger time gap between trackpoints. */
-  maxGapMs: number
   /** Max time distance for inheriting from an adjacent geotagged photo. */
   maxInheritGapMs: number
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
-  maxGapMs: 300_000,
   maxInheritGapMs: 600_000,
 }
 
@@ -35,8 +32,7 @@ export function matchToTracks(
   photo: Photo,
   source: Source,
   tracks: Track[],
-  method: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated'>,
-  settings: MatchSettings = DEFAULT_MATCH_SETTINGS
+  method: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated'>
 ): MatchResult {
   const t = effectiveUtcMs(photo, source)
   if (t === undefined) return { ok: false, reason: 'no-time' }
@@ -75,12 +71,13 @@ export function matchToTracks(
       return { ok: true, assignment: { ...base, method, point: roundGps(c.point), trackId: c.trackId } }
     }
     case 'interpolated': {
+      // Interpolation needs adjacent points of one segment (any gap size);
+      // between segments or tracks it degrades to closest, flagged.
       const canInterpolate =
         before !== undefined &&
         after !== undefined &&
         pair.sameSegment &&
-        before.trackId === after.trackId &&
-        after.t - before.t <= settings.maxGapMs
+        before.trackId === after.trackId
       if (!canInterpolate) {
         // Degrade to closest, flagged so the UI can surface it.
         const c = closest()

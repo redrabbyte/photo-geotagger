@@ -34,48 +34,71 @@ function ref(track: Track, index: number, tMs: number): TrackPointRef {
 }
 
 /**
- * Find the surrounding trackpoints for a moment in time within a single track.
- * Segment boundaries are respected: before/after are only flagged sameSegment
- * when they belong to the same <trkseg>.
+ * Find the surrounding trackpoints for a moment in time within a single
+ * track: the LATEST point at/before tMs and the EARLIEST point after it,
+ * each searched independently across all segments. sameSegment is true only
+ * when both come from the same <trkseg> (then they are adjacent points).
  */
 export function findNeighborsInTrack(track: Track, tMs: number): NeighborPair {
-  let best: NeighborPair = { sameSegment: false }
-  let bestDelta = Infinity
-  for (const seg of track.segments) {
+  let before: TrackPointRef | undefined
+  let after: TrackPointRef | undefined
+  let beforeSeg = -1
+  let afterSeg = -1
+  for (let segIdx = 0; segIdx < track.segments.length; segIdx++) {
+    const seg = track.segments[segIdx]
     const idx = lowerBound(track, tMs, seg.startIdx, seg.endIdx)
-    const before = idx >= seg.startIdx ? ref(track, idx, tMs) : undefined
-    const afterIdx = idx + 1
-    const after = afterIdx <= seg.endIdx ? ref(track, afterIdx, tMs) : undefined
-    const delta = Math.min(
-      before ? Math.abs(before.deltaMs) : Infinity,
-      after ? Math.abs(after.deltaMs) : Infinity
-    )
-    if (delta < bestDelta) {
-      bestDelta = delta
-      best = { before, after, sameSegment: before !== undefined && after !== undefined }
+    if (idx >= seg.startIdx) {
+      const cand = ref(track, idx, tMs)
+      if (!before || cand.t > before.t) {
+        before = cand
+        beforeSeg = segIdx
+      }
+    }
+    if (idx + 1 <= seg.endIdx) {
+      const cand = ref(track, idx + 1, tMs)
+      if (!after || cand.t < after.t) {
+        after = cand
+        afterSeg = segIdx
+      }
     }
   }
-  return best
+  return {
+    before,
+    after,
+    sameSegment: before !== undefined && after !== undefined && beforeSeg === afterSeg,
+  }
 }
 
 /**
- * Find the best neighbor pair across all tracks: the pair whose nearest
- * point minimizes |Δt| to the photo time.
+ * Find the surrounding trackpoints across ALL tracks: best before and best
+ * after are chosen independently, so a photo between two tracks gets the
+ * earlier track's end as 'before' and the later track's start as 'after'.
  */
 export function findNeighbors(tracks: Track[], tMs: number): NeighborPair {
-  let best: NeighborPair = { sameSegment: false }
-  let bestDelta = Infinity
+  let before: TrackPointRef | undefined
+  let after: TrackPointRef | undefined
+  let beforeTrack: Track | undefined
+  let afterTrack: Track | undefined
+  let beforePairSameSegment = false
   for (const track of tracks) {
     if (track.points.length === 0) continue
     const pair = findNeighborsInTrack(track, tMs)
-    const delta = Math.min(
-      pair.before ? Math.abs(pair.before.deltaMs) : Infinity,
-      pair.after ? Math.abs(pair.after.deltaMs) : Infinity
-    )
-    if (delta < bestDelta) {
-      bestDelta = delta
-      best = pair
+    if (pair.before && (!before || pair.before.t > before.t)) {
+      before = pair.before
+      beforeTrack = track
+      beforePairSameSegment = pair.sameSegment
+    }
+    if (pair.after && (!after || pair.after.t < after.t)) {
+      after = pair.after
+      afterTrack = track
     }
   }
-  return best
+  return {
+    before,
+    after,
+    // Adjacent within one segment only when both winners came from the same
+    // track and that track's own pair was same-segment.
+    sameSegment:
+      before !== undefined && after !== undefined && beforeTrack === afterTrack && beforePairSameSegment,
+  }
 }

@@ -119,7 +119,7 @@ describe('matchToTracks', () => {
     expect(r.assignment.point.ele).toBeCloseTo(103.5, 5)
   })
 
-  it('interpolation across a too-large gap degrades to closest and flags it', () => {
+  it('interpolates across arbitrarily large gaps within one segment', () => {
     const sparse = makeTrack({
       points: [
         { lat: 50, lon: 8, t: T0 },
@@ -129,10 +129,41 @@ describe('matchToTracks', () => {
       endMs: T0 + 20 * MIN,
     })
     const r = matchToTracks(makePhoto(T0 + 4 * MIN), src, [sparse], 'interpolated')
-    if (!r.ok) throw new Error('expected degraded match')
-    expect(r.assignment.method).toBe('closest')
-    expect(r.assignment.degraded).toBe(true)
-    expect(r.assignment.point.lat).toBe(50)
+    if (!r.ok) throw new Error('expected match')
+    expect(r.assignment.method).toBe('interpolated')
+    expect(r.assignment.point.lat).toBeCloseTo(50.2, 9)
+    expect(r.assignment.point.lon).toBeCloseTo(8.2, 9)
+  })
+
+  it("before works between two tracks even when the later track is closer", () => {
+    // Track A ends at T0+10min; Track B starts hours later but closer to the photo.
+    const trackA = makeTrack()
+    const trackB = makeTrack({
+      id: 'trk2',
+      points: [
+        { lat: 60, lon: 20, t: T0 + 300 * MIN },
+        { lat: 60.01, lon: 20.01, t: T0 + 310 * MIN },
+      ],
+      segments: [{ startIdx: 0, endIdx: 1 }],
+      startMs: T0 + 300 * MIN,
+      endMs: T0 + 310 * MIN,
+    })
+    // Photo 1 minute before Track B: 'after' is B's start (nearest), but
+    // 'before' must still find Track A's end.
+    const photo = makePhoto(T0 + 299 * MIN)
+    const rb = matchToTracks(photo, src, [trackA, trackB], 'before')
+    if (!rb.ok) throw new Error('expected before-match')
+    expect(rb.assignment.point.lat).toBeCloseTo(50.01, 9)
+    expect(rb.assignment.trackId).toBe('trk1')
+    const ra = matchToTracks(photo, src, [trackA, trackB], 'after')
+    if (!ra.ok) throw new Error('expected after-match')
+    expect(ra.assignment.point.lat).toBe(60)
+    // Interpolation between different tracks degrades to closest.
+    const ri = matchToTracks(photo, src, [trackA, trackB], 'interpolated')
+    if (!ri.ok) throw new Error('expected degraded match')
+    expect(ri.assignment.method).toBe('closest')
+    expect(ri.assignment.degraded).toBe(true)
+    expect(ri.assignment.point.lat).toBe(60)
   })
 
   it('photos far outside track coverage still snap to the nearest point', () => {

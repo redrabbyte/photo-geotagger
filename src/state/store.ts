@@ -308,7 +308,7 @@ export const useStore = create<AppState>((set, get) => ({
       const result =
         method === 'inherit'
           ? matchByInherit(photo, source, inheritRefs, s.settings.match)
-          : matchToTracks(photo, source, tracks, method, s.settings.match)
+          : matchToTracks(photo, source, tracks, method)
 
       if (result.ok) {
         photos[id] = { ...photo, assignment: result.assignment, writeState: 'dirty' }
