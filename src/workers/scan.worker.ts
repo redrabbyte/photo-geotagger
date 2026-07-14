@@ -9,8 +9,9 @@ export interface ScanJob {
   kind: PhotoKind
 }
 
+/** 'scan' extracts metadata only; 'thumb' generates thumbnails on demand. */
 export interface ScanRequest {
-  type: 'scan'
+  type: 'scan' | 'thumb'
   jobs: ScanJob[]
 }
 
@@ -22,17 +23,22 @@ export type ScanResponse =
   | { type: 'batch-done' }
 
 const THUMB_SIZE = 320
+/** Embedded previews up to this size are shown as-is — no decode/re-encode. */
+const DIRECT_THUMB_MAX_BYTES = 128 * 1024
 
-async function downscale(source: ImageBitmapSource): Promise<Blob | undefined> {
+async function downscale(source: Blob | File): Promise<Blob | undefined> {
   try {
-    const bitmap = await createImageBitmap(source as Blob, { imageOrientation: 'from-image' })
-    const scale = Math.min(1, THUMB_SIZE / Math.max(bitmap.width, bitmap.height))
-    const w = Math.max(1, Math.round(bitmap.width * scale))
-    const h = Math.max(1, Math.round(bitmap.height * scale))
-    const canvas = new OffscreenCanvas(w, h)
+    // Let the decoder downsample: substantially cheaper than decoding the
+    // full image and shrinking it on a canvas afterwards.
+    const bitmap = await createImageBitmap(source, {
+      imageOrientation: 'from-image',
+      resizeWidth: THUMB_SIZE,
+      resizeQuality: 'medium',
+    })
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
     const ctx = canvas.getContext('2d')
     if (!ctx) return undefined
-    ctx.drawImage(bitmap, 0, 0, w, h)
+    ctx.drawImage(bitmap, 0, 0)
     bitmap.close()
     return await canvas.convertToBlob({ type: 'image/webp', quality: 0.8 })
   } catch {
@@ -46,41 +52,51 @@ async function extractThumb(file: File, kind: PhotoKind): Promise<Blob | undefin
     const embedded = await exifr.thumbnail(file)
     if (embedded) {
       const blob = new Blob([embedded as BlobPart], { type: 'image/jpeg' })
+      // Small previews go out untouched — re-encoding costs ~20x more than
+      // handing the browser the original JPEG bytes.
+      if (blob.size <= DIRECT_THUMB_MAX_BYTES) return blob
       return (await downscale(blob)) ?? blob
     }
   } catch {
     // fall through
   }
-  // JPEGs decode natively; downscale from the full image.
+  // JPEGs decode natively; downsample from the full image.
   if (kind === 'jpeg') return downscale(file)
   return undefined
 }
 
 self.onmessage = async (event: MessageEvent<ScanRequest>) => {
-  const { jobs } = event.data
+  const { type, jobs } = event.data
   for (const job of jobs) {
     try {
       const file = await job.handle.getFile()
-      const meta = await extractMeta(file, file.lastModified)
-      postMessage({
-        type: 'meta',
-        id: job.id,
-        meta,
-        sizeBytes: file.size,
-        lastModified: file.lastModified,
-      } satisfies ScanResponse)
-      const thumb = await extractThumb(file, job.kind)
-      if (thumb) {
-        postMessage({ type: 'thumb', id: job.id, blob: thumb } satisfies ScanResponse)
+      if (type === 'scan') {
+        const meta = await extractMeta(file, file.lastModified)
+        postMessage({
+          type: 'meta',
+          id: job.id,
+          meta,
+          sizeBytes: file.size,
+          lastModified: file.lastModified,
+        } satisfies ScanResponse)
+      } else {
+        const thumb = await extractThumb(file, job.kind)
+        if (thumb) {
+          postMessage({ type: 'thumb', id: job.id, blob: thumb } satisfies ScanResponse)
+        } else {
+          postMessage({ type: 'thumb-failed', id: job.id } satisfies ScanResponse)
+        }
+      }
+    } catch (err) {
+      if (type === 'scan') {
+        postMessage({
+          type: 'error',
+          id: job.id,
+          message: err instanceof Error ? err.message : String(err),
+        } satisfies ScanResponse)
       } else {
         postMessage({ type: 'thumb-failed', id: job.id } satisfies ScanResponse)
       }
-    } catch (err) {
-      postMessage({
-        type: 'error',
-        id: job.id,
-        message: err instanceof Error ? err.message : String(err),
-      } satisfies ScanResponse)
     }
   }
   postMessage({ type: 'batch-done' } satisfies ScanResponse)

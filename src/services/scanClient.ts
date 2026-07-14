@@ -10,14 +10,17 @@ export interface ScanCallbacks {
 }
 
 const BATCH_SIZE = 24
+const THUMB_BATCH_SIZE = 8
 
 /**
- * Manages a pool of scan workers, distributing metadata/thumbnail extraction
- * jobs and streaming results back as store updates.
+ * Manages a pool of scan workers. Metadata jobs always run before thumbnail
+ * jobs — a folder becomes fully matchable in seconds while thumbnails are
+ * generated lazily for what is actually visible.
  */
 export class ScanClient {
   private workers: Worker[] = []
-  private queue: ScanJob[] = []
+  private metaQueue: ScanJob[] = []
+  private thumbQueue: ScanJob[] = []
   private busy: Set<Worker> = new Set()
   private callbacks: ScanCallbacks
 
@@ -36,13 +39,20 @@ export class ScanClient {
     }
   }
 
+  /** Queue metadata extraction (high priority). */
   enqueue(jobs: ScanJob[]): void {
-    this.queue.push(...jobs)
+    this.metaQueue.push(...jobs)
+    this.pump()
+  }
+
+  /** Queue thumbnail generation (runs when no metadata is pending). */
+  enqueueThumbs(jobs: ScanJob[]): void {
+    this.thumbQueue.push(...jobs)
     this.pump()
   }
 
   get pending(): number {
-    return this.queue.length
+    return this.metaQueue.length + this.thumbQueue.length
   }
 
   private handleMessage(worker: Worker, msg: ScanResponse): void {
@@ -68,13 +78,19 @@ export class ScanClient {
 
   private pump(): void {
     for (const worker of this.workers) {
-      if (this.queue.length === 0) break
       if (this.busy.has(worker)) continue
-      const jobs = this.queue.splice(0, BATCH_SIZE)
+      let request: ScanRequest | undefined
+      if (this.metaQueue.length > 0) {
+        request = { type: 'scan', jobs: this.metaQueue.splice(0, BATCH_SIZE) }
+      } else if (this.thumbQueue.length > 0) {
+        request = { type: 'thumb', jobs: this.thumbQueue.splice(0, THUMB_BATCH_SIZE) }
+      } else {
+        break
+      }
       this.busy.add(worker)
-      worker.postMessage({ type: 'scan', jobs } satisfies ScanRequest)
+      worker.postMessage(request)
     }
-    if (this.queue.length === 0 && this.busy.size === 0) {
+    if (this.metaQueue.length === 0 && this.thumbQueue.length === 0 && this.busy.size === 0) {
       this.callbacks.onIdle()
     }
   }
@@ -82,7 +98,8 @@ export class ScanClient {
   dispose(): void {
     for (const w of this.workers) w.terminate()
     this.workers = []
-    this.queue = []
+    this.metaQueue = []
+    this.thumbQueue = []
     this.busy.clear()
   }
 }

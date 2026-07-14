@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Photo } from '../domain/types'
 import { effectiveUtcMs, gpsStatus, isDirty } from '../domain/types'
 import { useStore } from '../state/store'
+import { ensureThumbs } from '../services/appActions'
 import { formatUtc } from './format'
 
 const ITEM_W = 108
@@ -61,6 +62,13 @@ export function Filmstrip() {
   const first = Math.max(0, Math.floor(scrollLeft / ITEM_W) - 4)
   const count = Math.ceil(viewWidth / ITEM_W) + 8
   const visible = ordered.slice(first, first + count)
+
+  // Thumbnails are generated lazily for what is (nearly) visible.
+  useEffect(() => {
+    const ids = visible.filter((p) => !p.thumbUrl).map((p) => p.id)
+    if (ids.length > 0) ensureThumbs(ids)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [first, count, ordered])
 
   const selectRange = (fromId: string, toId: string, additive: boolean) => {
     const store = useStore.getState()

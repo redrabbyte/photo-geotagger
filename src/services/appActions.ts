@@ -27,10 +27,12 @@ function flushUpdates(): void {
 function queueUpdate(update: ScanUpdate): void {
   updateBuffer.push(update)
   if (!flushTimer) {
+    // Each flush re-renders every photo-subscribed component; during a large
+    // scan the flush rate dominates main-thread cost, so keep it low.
     flushTimer = setTimeout(() => {
       flushTimer = undefined
       flushUpdates()
-    }, 120)
+    }, 300)
   }
 }
 
@@ -49,6 +51,26 @@ function getScanClient(): ScanClient {
     })
   }
   return scanClient
+}
+
+const thumbsRequested = new Set<string>()
+
+/**
+ * Request thumbnails for the given photos (visible filmstrip items, the
+ * inspector photo). Thumbnails are generated lazily so metadata scanning of
+ * a large folder finishes first.
+ */
+export function ensureThumbs(ids: string[]): void {
+  const store = useStore.getState()
+  const jobs = []
+  for (const id of ids) {
+    if (thumbsRequested.has(id)) continue
+    const p = store.photos[id]
+    if (!p || p.thumbUrl || !p.fileHandle) continue
+    thumbsRequested.add(id)
+    jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind })
+  }
+  if (jobs.length > 0) getScanClient().enqueueThumbs(jobs)
 }
 
 async function persistCurrentSources(): Promise<void> {

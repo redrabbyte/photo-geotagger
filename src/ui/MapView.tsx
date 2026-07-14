@@ -428,12 +428,31 @@ export function MapView() {
     src?.setData(trackFeatures(tracks))
   }, [tracks, mapReady])
 
-  // Photo layer updates.
+  // Photo layer updates. During a folder scan the photos record changes many
+  // times per second; rebuilding the whole GeoJSON each time dominates the
+  // main thread, so bulk updates are trailing-debounced. Selection changes
+  // are user-facing and refresh immediately.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    if (!mapReady) return
+    if (refreshTimerRef.current) return
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = undefined
+      refreshRef.current()
+    }, 250)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos, sources, mapReady])
   useEffect(() => {
     if (!mapReady) return
     refreshPhotoSource()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photos, sources, selectedIds, mapReady])
+  }, [selectedIds, mapReady])
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    },
+    []
+  )
 
   // Draft layer updates.
   useEffect(() => {

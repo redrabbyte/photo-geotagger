@@ -3,7 +3,9 @@ import { exiftoolInspect } from '../services/writePipeline'
 import type { AssignmentMethod } from '../domain/types'
 import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
+import { useEffect } from 'react'
 import { useStore } from '../state/store'
+import { ensureThumbs } from '../services/appActions'
 import { TrackEditorPanel } from './TrackEditorPanel'
 import { formatCoord, formatDeltaMs, formatUtc } from './format'
 
@@ -28,6 +30,10 @@ export function Inspector() {
   const activeSource = active ? sources[active.sourceId] : undefined
   const selectedCount = selectedIds.size
   const [exifDump, setExifDump] = useState<{ fileName: string; text: string } | 'loading' | undefined>()
+
+  useEffect(() => {
+    if (activePhotoId) ensureThumbs([activePhotoId])
+  }, [activePhotoId])
 
   const showExifDetails = async () => {
     if (!active?.fileHandle) return
