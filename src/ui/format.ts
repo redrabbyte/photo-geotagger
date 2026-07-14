@@ -50,3 +50,12 @@ export function formatCoord(v: number, isLat: boolean): string {
   const ref = isLat ? (v >= 0 ? 'N' : 'S') : v >= 0 ? 'E' : 'W'
   return `${Math.abs(v).toFixed(6)}° ${ref}`
 }
+
+/** "42 s" / "3 min 20 s" / "1 h 05 min" for export time estimates. */
+export function formatEtaMs(ms: number): string {
+  const totalSec = Math.max(1, Math.round(ms / 1000))
+  if (totalSec < 90) return `${totalSec} s`
+  const min = Math.floor(totalSec / 60)
+  if (min < 60) return `${min} min ${String(totalSec % 60).padStart(2, '0')} s`
+  return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`
+}

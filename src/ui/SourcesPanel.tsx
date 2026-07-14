@@ -48,6 +48,7 @@ export function SourcesPanel() {
   const photos = useStore((s) => s.photos)
   const tracks = useStore((s) => s.tracks)
   const pendingGpx = useStore((s) => s.pendingGpx)
+  const importFilters = useStore((s) => s.settings.importFilters)
   const scanning = useStore((s) => s.scanning)
   const [restorable, setRestorable] = useState<RestorableSource[]>([])
   const [restorableGpx, setRestorableGpx] = useState<RestorableGpx[]>([])
@@ -108,6 +109,26 @@ export function SourcesPanel() {
           <button onClick={() => void addSourceFlow()}>+ Folder</button>
           <button title="Pick individual image files instead of a whole folder" onClick={() => void addFilesFlow()}>+ Files</button>
         </span>
+      </div>
+      <div className="import-filters" title="Which file types the folder import picks up — change before opening a folder">
+        {(
+          [
+            ['jpeg', 'JPG'],
+            ['raw', 'RAW'],
+            ['xmp', 'XMP'],
+          ] as const
+        ).map(([key, label]) => (
+          <label className="checkbox-row small" key={key}>
+            <input
+              type="checkbox"
+              checked={importFilters[key]}
+              onChange={(e) =>
+                useStore.getState().setSettings({ importFilters: { ...importFilters, [key]: e.target.checked } })
+              }
+            />
+            {label}
+          </label>
+        ))}
       </div>
       {scanning && <div className="scanning-note">Scanning photos…</div>}
 

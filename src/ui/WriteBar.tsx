@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
 import { isDirty } from '../domain/types'
 import { useStore } from '../state/store'
-import { writeDirtyFlow, writeTimesFlow } from '../services/appActions'
+import { requestWriteStop, writeDirtyFlow, writeTimesFlow } from '../services/appActions'
 import { timeCorrectionFor, type WriteMode } from '../services/writePipeline'
+import { formatEtaMs } from './format'
 
 export function WriteBar() {
   const photos = useStore((s) => s.photos)
@@ -13,8 +14,21 @@ export function WriteBar() {
   // Pending flow awaiting the stripped-files confirmation.
   const [confirmStripped, setConfirmStripped] = useState<'gps' | 'time' | null>(null)
 
-  const dirty = useMemo(() => Object.values(photos).filter(isDirty), [photos])
+  const embedActive = settings.writeMode === 'exiftool' && settings.embedSidecarGps
+  const dirty = useMemo(
+    () =>
+      Object.values(photos).filter(
+        (p) =>
+          isDirty(p) ||
+          (embedActive && p.sidecarGps !== undefined && !p.assignment && p.writeState !== 'written' && p.writeState !== 'writing')
+      ),
+    [photos, embedActive]
+  )
   const dirtyRaw = dirty.filter((p) => p.kind !== 'jpeg').length
+  const sidecarEmbedCount = useMemo(
+    () => Object.values(photos).filter((p) => p.sidecarGps !== undefined && !p.assignment && p.writeState !== 'written').length,
+    [photos]
+  )
   // Photos whose file needs a clock/timezone fix (independent of GPS).
   const timeFix = useMemo(
     () =>
@@ -104,12 +118,33 @@ export function WriteBar() {
         </label>
       )}
 
+      {settings.writeMode === 'exiftool' && sidecarEmbedCount > 0 && (
+        <label
+          className="checkbox-row"
+          title="Write the GPS loaded from .xmp sidecar files directly into the corresponding raw files (via ExifTool), so the coordinates live in the files themselves."
+        >
+          <input
+            type="checkbox"
+            checked={settings.embedSidecarGps}
+            onChange={(e) => useStore.getState().setSettings({ embedSidecarGps: e.target.checked })}
+            disabled={writing}
+          />
+          Embed XMP GPS into {sidecarEmbedCount} raw file{sidecarEmbedCount === 1 ? '' : 's'}
+        </label>
+      )}
+
       <span className="spacer" />
 
       {writing ? (
         <span className="write-progress">
-          Writing {writeProgress.done + 1}/{writeProgress.total}: {writeProgress.current}
+          Writing {Math.min(writeProgress.done + 1, writeProgress.total)}/{writeProgress.total}: {writeProgress.current}
+          {writeProgress.etaMs !== undefined && (
+            <span className="muted"> · ~{formatEtaMs(writeProgress.etaMs)} left</span>
+          )}
           <progress value={writeProgress.done} max={writeProgress.total} />
+          <button title="Finish the file currently being written, then stop" onClick={() => requestWriteStop()}>
+            ⏹ Stop
+          </button>
         </span>
       ) : (
         <>

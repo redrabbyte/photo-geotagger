@@ -94,6 +94,10 @@ export interface Photo {
   sizeBytes: number
   lastModified: number
   fileHandle?: FileSystemFileHandle
+  /** Companion .xmp sidecar found next to this file during folder import. */
+  sidecarHandle?: FileSystemFileHandle
+  /** GPS read from the sidecar (takes precedence over embedded EXIF GPS). */
+  sidecarGps?: GeoPoint
 
   meta?: PhotoMeta
   scanState: ScanState
@@ -151,11 +155,12 @@ export function gpsStatus(photo: Photo): GpsStatus {
       ? 'manual'
       : 'assigned'
   }
-  return photo.meta?.originalGps ? 'original' : 'none'
+  return photo.sidecarGps || photo.meta?.originalGps ? 'original' : 'none'
 }
 
 export function displayPosition(photo: Photo): GeoPoint | undefined {
-  return photo.assignment?.point ?? photo.meta?.originalGps
+  // Sidecar GPS outranks embedded EXIF GPS (the sidecar is the newer edit).
+  return photo.assignment?.point ?? photo.sidecarGps ?? photo.meta?.originalGps
 }
 
 export function isDirty(photo: Photo): boolean {

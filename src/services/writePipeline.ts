@@ -31,6 +31,10 @@ export interface WriteOptions {
   writeCorrectedTime?: boolean
   /** Photos written concurrently (>1 only useful for ExifTool RAW writes). */
   concurrency?: number
+  /** ExifTool mode: photos without an assignment fall back to sidecar GPS. */
+  embedSidecarGps?: boolean
+  /** Checked between files: when true, no further file is started. */
+  shouldStop?: () => boolean
   onProgress?: (done: number, total: number, current: string) => void
 }
 
@@ -231,7 +235,7 @@ export async function writePhoto(
   source: Source,
   options: WriteOptions
 ): Promise<{ target: 'exif' | 'sidecar'; timeCorrection?: TimeCorrection }> {
-  const gps = photo.assignment?.point
+  const gps = photo.assignment?.point ?? (options.embedSidecarGps ? photo.sidecarGps : undefined)
   if (!gps) throw new Error('Photo has no assigned position')
   const time = options.writeCorrectedTime ? timeCorrectionFor(photo, source) : undefined
 
@@ -329,6 +333,8 @@ async function runWriteJobs(
   let completed = 0
   const workers = Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 1, photos.length)) }, async () => {
     for (;;) {
+      // Stop takes effect between files: the current one always completes.
+      if (options.shouldStop?.()) return
       const photo = queue.shift()
       if (!photo) return
       options.onProgress?.(completed, photos.length, photo.fileName)

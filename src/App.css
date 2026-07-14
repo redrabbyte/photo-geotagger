@@ -249,6 +249,17 @@ h4 {
   margin: 4px 0;
 }
 
+.import-filters {
+  display: flex;
+  gap: 12px;
+  margin: 4px 0 6px;
+}
+
+.import-filters .checkbox-row {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .scanning-note {
   color: var(--accent);
   padding: 4px 0;

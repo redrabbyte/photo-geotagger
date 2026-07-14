@@ -34,6 +34,7 @@ import {
   type TrackDraft,
 } from '../domain/trackDraft'
 import type { WriteMode } from '../services/writePipeline'
+import type { ImportFilters } from '../services/fs/sources'
 
 export const SOURCE_COLORS = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#76b7b2', '#edc948']
 export const TRACK_COLORS = ['#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22']
@@ -58,6 +59,10 @@ interface AppSettings {
   writeCorrectedTime: boolean
   /** Use two ExifTool workers for RAW/HEIC writes (faster, more memory). */
   parallelExiftool: boolean
+  /** ExifTool mode: also write GPS from loaded .xmp sidecars into the raw files. */
+  embedSidecarGps: boolean
+  /** Which file types folder import picks up. */
+  importFilters: ImportFilters
   match: MatchSettings
 }
 
@@ -69,7 +74,7 @@ export interface AppState {
   activePhotoId?: string
   settings: AppSettings
   scanning: boolean
-  writeProgress?: { done: number; total: number; current: string }
+  writeProgress?: { done: number; total: number; current: string; etaMs?: number }
   notices: Notice[]
   /** Manual drags snap to the nearest track when enabled. */
   snapToTrack: boolean
@@ -105,6 +110,8 @@ export interface AppState {
   clearAssignment(ids: string[]): void
   setManualPosition(id: string, point: GeoPoint, onTrackId?: string): void
   markWriting(ids: string[]): void
+  /** Photos still 'writing' after a stopped batch go back to their prior state. */
+  resetWriting(ids: string[]): void
   markWriteResult(
     photoId: string,
     ok: boolean,
@@ -119,7 +126,7 @@ export interface AppState {
     error?: string,
     timeCorrection?: { wallClockMs: number; tzOffsetMin: number }
   ): void
-  setWriteProgress(progress?: { done: number; total: number; current: string }): void
+  setWriteProgress(progress?: { done: number; total: number; current: string; etaMs?: number }): void
   setSettings(patch: Partial<AppSettings>): void
   setSnapToTrack(snap: boolean): void
   flyTo(point: GeoPoint, zoom?: number): void
@@ -164,6 +171,7 @@ export interface AppState {
 export type ScanUpdate =
   | { id: string; kind: 'meta'; meta: PhotoMeta; sizeBytes?: number; lastModified?: number }
   | { id: string; kind: 'stat'; sizeBytes: number; lastModified: number }
+  | { id: string; kind: 'sidecar'; gps: GeoPoint }
   | { id: string; kind: 'thumb'; url: string }
   | { id: string; kind: 'thumb-failed' }
   | { id: string; kind: 'error'; message: string }
@@ -180,6 +188,8 @@ export const useStore = create<AppState>((set, get) => ({
     backupOriginals: true,
     writeCorrectedTime: false,
     parallelExiftool: false,
+    embedSidecarGps: false,
+    importFilters: { jpeg: true, raw: true, xmp: true },
     match: DEFAULT_MATCH_SETTINGS,
   },
   scanning: false,
@@ -235,6 +245,9 @@ export const useStore = create<AppState>((set, get) => ({
             break
           case 'stat':
             photos[u.id] = { ...p, sizeBytes: u.sizeBytes, lastModified: u.lastModified }
+            break
+          case 'sidecar':
+            photos[u.id] = { ...p, sidecarGps: u.gps }
             break
           case 'thumb':
             photos[u.id] = { ...p, thumbUrl: u.url }
@@ -372,6 +385,19 @@ export const useStore = create<AppState>((set, get) => ({
     })
   },
 
+  resetWriting(ids) {
+    set((s) => {
+      const photos = { ...s.photos }
+      for (const id of ids) {
+        const p = photos[id]
+        if (p && p.writeState === 'writing') {
+          photos[id] = { ...p, writeState: p.assignment ? 'dirty' : 'clean' }
+        }
+      }
+      return { photos }
+    })
+  },
+
   markWriteResult(photoId, ok, target, error, timeCorrection) {
     set((s) => {
       const p = s.photos[photoId]
@@ -391,7 +417,14 @@ export const useStore = create<AppState>((set, get) => ({
         }
       }
       const updated: Photo = ok
-        ? { ...p, writeState: 'written', writeTarget: target, writeError: undefined, meta }
+        ? {
+            ...p,
+            writeState: 'written',
+            writeTarget: target,
+            writeError: undefined,
+            meta,
+            sidecarGps: target === 'sidecar' && p.assignment ? p.assignment.point : p.sidecarGps,
+          }
         : { ...p, writeState: 'write-error', writeError: error }
       return { photos: { ...s.photos, [photoId]: updated } }
     })

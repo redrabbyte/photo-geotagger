@@ -1,7 +1,8 @@
 import type { Photo, Source, Track } from '../domain/types'
 import { isDirty } from '../domain/types'
 import { parseGpx, GpxParseError } from '../domain/parseGpx'
-import { enumerateFolder, fsaSupported } from './fs/sources'
+import { enumerateFolder, fsaSupported, type FoundFile } from './fs/sources'
+import { readGpsFromXmp } from '../domain/xmp'
 import {
   ensurePermission,
   loadPersistedGpx,
@@ -73,6 +74,22 @@ function getScanClient(): ScanClient {
 const thumbsRequested = new Set<string>()
 const urgentMetaIds = new Set<string>()
 
+let writeStopRequested = false
+
+/** Stop the running export after the file currently being written finishes. */
+export function requestWriteStop(): void {
+  writeStopRequested = true
+}
+
+/** Progress reporter with a continuously updated time estimate. */
+function makeProgressReporter() {
+  const startedAt = Date.now()
+  return (done: number, total: number, current: string) => {
+    const etaMs = done > 0 ? ((Date.now() - startedAt) / done) * (total - done) : undefined
+    useStore.getState().setWriteProgress(done < total ? { done, total, current, etaMs } : undefined)
+  }
+}
+
 /**
  * Pull a not-yet-scanned photo's metadata to the front of the queue —
  * clicking a photo shows its time/GPS immediately even mid-import.
@@ -143,23 +160,52 @@ function statPhotosInBackground(photos: Photo[]): void {
   })()
 }
 
+/** Read paired .xmp sidecars and attach their GPS to the photos. */
+function readSidecarsInBackground(photos: Photo[]): void {
+  void (async () => {
+    for (const p of photos) {
+      if (!p.sidecarHandle) continue
+      try {
+        const text = await (await p.sidecarHandle.getFile()).text()
+        const gps = readGpsFromXmp(text)
+        if (gps) queueUpdate({ id: p.id, kind: 'sidecar', gps })
+      } catch {
+        // unreadable sidecar — photo simply keeps its embedded GPS (if any)
+      }
+    }
+  })()
+}
+
 async function ingestSource(source: Source): Promise<void> {
   const store = useStore.getState()
   if (!source.dirHandle) return
   store.setScanning(true)
   try {
-    const scan = await enumerateFolder(source.dirHandle)
+    const scan = await enumerateFolder(source.dirHandle, store.settings.importFilters)
+
+    // Pair .xmp sidecars with their photo by base path (DSC01.xmp ~ DSC01.ARW).
+    const xmpByBase = new Map<string, FoundFile>()
+    for (const x of scan.xmpFiles) {
+      const dot = x.relativePath.lastIndexOf('.')
+      xmpByBase.set(x.relativePath.slice(0, dot).toLowerCase(), x)
+    }
 
     const photos: Photo[] = []
     for (const f of scan.photos) {
       const record = makePhotoRecord(source.id, f.handle, f.relativePath, f.name, 0, 0)
-      if (record) photos.push(record)
+      if (record) {
+        const dot = f.relativePath.lastIndexOf('.')
+        const sidecar = xmpByBase.get(f.relativePath.slice(0, dot).toLowerCase())
+        if (sidecar) record.sidecarHandle = sidecar.handle
+        photos.push(record)
+      }
     }
     // Photos appear immediately; scanning starts immediately; stats stream in.
     store.addSource(source, photos)
     if (photos.length > 0) {
       getScanClient().enqueue(photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind })))
       statPhotosInBackground(photos)
+      readSidecarsInBackground(photos)
     } else {
       store.setScanning(false)
     }
@@ -464,6 +510,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
 
   const timeConcurrency = store.settings.writeMode === 'exiftool' && store.settings.parallelExiftool ? 2 : 1
   setExiftoolPoolSize(timeConcurrency)
+  writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const results = await writeTimeBatch(
     targets,
@@ -472,29 +519,43 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
       mode: store.settings.writeMode,
       backupOriginals: store.settings.backupOriginals,
       concurrency: timeConcurrency,
-      onProgress: (done, total, current) =>
-        useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
+      shouldStop: () => writeStopRequested,
+      onProgress: makeProgressReporter(),
     },
     (result) =>
       useStore.getState().markTimeWriteResult(result.photoId, result.ok, result.error, result.timeCorrection)
   )
 
+  useStore.getState().resetWriting(targets.map((p) => p.id))
   const okCount = results.filter((r) => r.ok).length
   const failed = results.length - okCount
+  const stopped = writeStopRequested && results.length < targets.length
   useStore.getState().setWriteProgress(undefined)
   useStore
     .getState()
     .notify(
       failed ? 'error' : 'success',
-      failed
-        ? `Corrected times in ${okCount}/${results.length} — ${failed} failed (see photo badges)`
-        : `Corrected times in ${okCount} file(s)`
+      (stopped ? `Stopped — ` : '') +
+        (failed
+          ? `Corrected times in ${okCount}/${results.length} — ${failed} failed (see photo badges)`
+          : `Corrected times in ${okCount} file(s)`)
     )
+}
+
+/** GPS write targets: assigned photos, plus sidecar-GPS embeds when enabled. */
+export function gpsWriteTargets(): Photo[] {
+  const store = useStore.getState()
+  const embed = store.settings.writeMode === 'exiftool' && store.settings.embedSidecarGps
+  return Object.values(store.photos).filter((p) => {
+    if (p.writeState === 'writing') return false
+    if (isDirty(p)) return true
+    return embed && p.sidecarGps !== undefined && !p.assignment && p.writeState !== 'written'
+  })
 }
 
 export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   const store = useStore.getState()
-  const all = Object.values(store.photos).filter((p) => isDirty(p) && p.writeState !== 'writing')
+  const all = gpsWriteTargets()
   const targets = onlyIds ? all.filter((p) => onlyIds.includes(p.id)) : all
   if (targets.length === 0) {
     store.notify('info', 'Nothing to write — no photos with unsaved positions.')
@@ -523,6 +584,7 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
 
   const gpsConcurrency = store.settings.writeMode === 'exiftool' && store.settings.parallelExiftool ? 2 : 1
   setExiftoolPoolSize(gpsConcurrency)
+  writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const sourcesMap = new Map(Object.entries(store.sources))
   const results = await writeBatch(
@@ -532,9 +594,10 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
       mode: store.settings.writeMode,
       backupOriginals: store.settings.backupOriginals,
       writeCorrectedTime: store.settings.writeCorrectedTime,
+      embedSidecarGps: store.settings.writeMode === 'exiftool' && store.settings.embedSidecarGps,
       concurrency: gpsConcurrency,
-      onProgress: (done, total, current) =>
-        useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
+      shouldStop: () => writeStopRequested,
+      onProgress: makeProgressReporter(),
     },
     (result) =>
       useStore
@@ -542,13 +605,16 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
         .markWriteResult(result.photoId, result.ok, result.target, result.error, result.timeCorrection)
   )
 
+  useStore.getState().resetWriting(targets.map((p) => p.id))
   const okCount = results.filter((r) => r.ok).length
   const failed = results.length - okCount
+  const stopped = writeStopRequested && results.length < targets.length
   useStore.getState().setWriteProgress(undefined)
   useStore
     .getState()
     .notify(
       failed ? 'error' : 'success',
-      failed ? `Wrote ${okCount}/${results.length} — ${failed} failed (see photo badges)` : `Wrote GPS to ${okCount} file(s)`
+      (stopped ? `Stopped — ` : '') +
+        (failed ? `Wrote ${okCount}/${results.length} — ${failed} failed (see photo badges)` : `Wrote GPS to ${okCount} file(s)`)
     )
 }

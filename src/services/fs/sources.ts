@@ -9,8 +9,18 @@ export interface FoundFile {
 export interface FolderScan {
   photos: FoundFile[]
   gpxFiles: FoundFile[]
+  xmpFiles: FoundFile[]
   skipped: number
 }
+
+export interface ImportFilters {
+  jpeg: boolean
+  /** RAW formats and HEIC. */
+  raw: boolean
+  xmp: boolean
+}
+
+export const DEFAULT_IMPORT_FILTERS: ImportFilters = { jpeg: true, raw: true, xmp: true }
 
 export function fsaSupported(): boolean {
   return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
@@ -18,12 +28,13 @@ export function fsaSupported(): boolean {
 
 const IGNORED_DIRS = new Set(['@eaDir', '.thumbnails', '__MACOSX'])
 
-/** Recursively enumerate photo and GPX files under a directory handle. */
+/** Recursively enumerate photo, GPX and XMP files under a directory handle. */
 export async function enumerateFolder(
   dir: FileSystemDirectoryHandle,
+  filters: ImportFilters = DEFAULT_IMPORT_FILTERS,
   onProgress?: (count: number) => void
 ): Promise<FolderScan> {
-  const result: FolderScan = { photos: [], gpxFiles: [], skipped: 0 }
+  const result: FolderScan = { photos: [], gpxFiles: [], xmpFiles: [], skipped: 0 }
   let seen = 0
 
   async function walk(handle: FileSystemDirectoryHandle, prefix: string): Promise<void> {
@@ -35,10 +46,16 @@ export async function enumerateFolder(
       } else {
         const file = entry as FileSystemFileHandle
         const rel = `${prefix}${entry.name}`
-        if (photoKindFromName(entry.name)) {
-          result.photos.push({ handle: file, relativePath: rel, name: entry.name })
+        const kind = photoKindFromName(entry.name)
+        if (kind) {
+          const wanted = kind === 'jpeg' ? filters.jpeg : filters.raw
+          if (wanted) result.photos.push({ handle: file, relativePath: rel, name: entry.name })
+          else result.skipped++
         } else if (isGpxName(entry.name)) {
           result.gpxFiles.push({ handle: file, relativePath: rel, name: entry.name })
+        } else if (entry.name.toLowerCase().endsWith('.xmp')) {
+          if (filters.xmp) result.xmpFiles.push({ handle: file, relativePath: rel, name: entry.name })
+          else result.skipped++
         } else {
           result.skipped++
         }
