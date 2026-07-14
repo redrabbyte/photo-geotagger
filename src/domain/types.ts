@@ -98,6 +98,8 @@ export interface Photo {
   sidecarHandle?: FileSystemFileHandle
   /** GPS read from the sidecar (takes precedence over embedded EXIF GPS). */
   sidecarGps?: GeoPoint
+  /** Capture time read from the sidecar (outranks the file's EXIF time). */
+  sidecarTime?: { wallClockMs: number; tzOffsetMin?: number }
 
   meta?: PhotoMeta
   scanState: ScanState
@@ -142,6 +144,12 @@ export interface Track {
 export type GpsStatus = 'original' | 'assigned' | 'manual' | 'none'
 
 export function effectiveUtcMs(photo: Photo, source: Source): number | undefined {
+  // A sidecar's DateTimeOriginal outranks the file's EXIF time (it is the
+  // newer edit) and is treated as already corrected: no clock offset applied.
+  if (photo.sidecarTime) {
+    const tz = photo.sidecarTime.tzOffsetMin ?? source.assumedTzOffsetMin
+    return photo.sidecarTime.wallClockMs - tz * 60_000
+  }
   if (!photo.meta) return undefined
   const tz = photo.meta.tzOffsetMin ?? source.assumedTzOffsetMin
   // Once the corrected time is baked into the file, the offset is spent.

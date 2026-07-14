@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest'
-import { generateXmpSidecar, mergeGpsIntoXmp, readGpsFromXmp, sidecarNameFor } from '../xmp'
+import { generateXmpSidecar, mergeGpsIntoXmp, readGpsFromXmp, readTimeFromXmp, sidecarNameFor } from '../xmp'
 import { parseGpx, GpxParseError } from '../parseGpx'
 
 const GPS = { lat: 51.5074, lon: -0.1278, ele: 35.5 }
@@ -59,6 +59,64 @@ describe('XMP sidecar', () => {
   it('sidecar naming', () => {
     expect(sidecarNameFor('DSC01234.ARW')).toBe('DSC01234.xmp')
     expect(sidecarNameFor('IMG_0001.heic')).toBe('IMG_0001.xmp')
+  })
+})
+
+describe('readTimeFromXmp', () => {
+  // 2026-06-01 12:34:56 wall clock as epoch ms with UTC fields.
+  const WALL = Date.UTC(2026, 5, 1, 12, 34, 56)
+
+  it('reads the time our own sidecar generator writes', () => {
+    const xml = generateXmpSidecar(GPS, new Date('2026-06-01T10:00:00Z'), {
+      wallClockMs: WALL,
+      tzOffsetMin: 120,
+    })
+    expect(readTimeFromXmp(xml)).toEqual({ wallClockMs: WALL, tzOffsetMin: 120 })
+  })
+
+  it('reads the time merged into an existing sidecar', () => {
+    const base = generateXmpSidecar(GPS)
+    const merged = mergeGpsIntoXmp(base, undefined, new DOMParser(), {
+      wallClockMs: WALL,
+      tzOffsetMin: -330,
+    })
+    expect(readTimeFromXmp(merged)).toEqual({ wallClockMs: WALL, tzOffsetMin: -330 })
+  })
+
+  it('parses Z, missing seconds, and missing offset', () => {
+    const wrap = (v: string) => `<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="${v}"/>
+ </rdf:RDF>
+</x:xmpmeta>`
+    expect(readTimeFromXmp(wrap('2026-06-01T12:34:56Z'))).toEqual({ wallClockMs: WALL, tzOffsetMin: 0 })
+    expect(readTimeFromXmp(wrap('2026-06-01T12:34'))).toEqual({
+      wallClockMs: Date.UTC(2026, 5, 1, 12, 34, 0),
+      tzOffsetMin: undefined,
+    })
+    expect(readTimeFromXmp(wrap('2026-06-01T12:34:56'))).toEqual({ wallClockMs: WALL, tzOffsetMin: undefined })
+  })
+
+  it('reads element-form DateTimeOriginal', () => {
+    const xml = `<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+   <exif:DateTimeOriginal>2026-06-01T12:34:56+02:00</exif:DateTimeOriginal>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>`
+    expect(readTimeFromXmp(xml)).toEqual({ wallClockMs: WALL, tzOffsetMin: 120 })
+  })
+
+  it('returns undefined for sidecars without a time or with garbage', () => {
+    expect(readTimeFromXmp(generateXmpSidecar(GPS))).toBeUndefined()
+    expect(readTimeFromXmp('not xml <')).toBeUndefined()
+    const bad = `<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="yesterday"/>
+ </rdf:RDF>
+</x:xmpmeta>`
+    expect(readTimeFromXmp(bad)).toBeUndefined()
   })
 })
 

@@ -68,6 +68,24 @@ describe('effectiveUtcMs', () => {
     const p = makePhoto(T0)
     expect(effectiveUtcMs(p, src)).toBe(T0 - 60 * MIN + 5000)
   })
+
+  it('sidecar time outranks EXIF time and ignores the clock offset', () => {
+    const src = makeSource({ assumedTzOffsetMin: 60, clockOffsetMs: 5000 })
+    const p = makePhoto(T0, { sidecarTime: { wallClockMs: T0 + 10 * MIN, tzOffsetMin: 120 } })
+    expect(effectiveUtcMs(p, src)).toBe(T0 + 10 * MIN - 120 * MIN)
+  })
+
+  it('sidecar time without offset uses the source assumed tz', () => {
+    const src = makeSource({ assumedTzOffsetMin: 60, clockOffsetMs: 5000 })
+    const p = makePhoto(T0, { sidecarTime: { wallClockMs: T0 + 10 * MIN } })
+    expect(effectiveUtcMs(p, src)).toBe(T0 + 10 * MIN - 60 * MIN)
+  })
+
+  it('sidecar time works even before the file itself was scanned', () => {
+    const src = makeSource()
+    const p = makePhoto(T0, { meta: undefined, sidecarTime: { wallClockMs: T0, tzOffsetMin: 0 } })
+    expect(effectiveUtcMs(p, src)).toBe(T0)
+  })
 })
 
 describe('findNeighbors', () => {

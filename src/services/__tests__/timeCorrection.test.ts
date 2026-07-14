@@ -52,6 +52,11 @@ describe('timeCorrectionFor', () => {
       timeCorrectionFor(makePhoto({ timeSource: 'file' }), makeSource({ clockOffsetMs: HOUR }))
     ).toBeUndefined()
   })
+
+  it('returns undefined when the correction already lives in a sidecar', () => {
+    const p = { ...makePhoto(), sidecarTime: { wallClockMs: T0 + HOUR, tzOffsetMin: 120 } }
+    expect(timeCorrectionFor(p, makeSource({ clockOffsetMs: HOUR }))).toBeUndefined()
+  })
 })
 
 describe('effectiveUtcMs with timeCorrected', () => {

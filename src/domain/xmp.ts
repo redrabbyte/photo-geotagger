@@ -147,20 +147,57 @@ export function mergeGpsIntoXmp(
   return serialized
 }
 
+function readXmpProp(doc: Document, local: string): string | undefined {
+  for (const desc of elementsByLocalName(doc, 'Description')) {
+    const attr = attributeByLocalName(desc, local)
+    if (attr) return attr
+    const elems = elementsByLocalName(desc, local)
+    if (elems.length > 0 && elems[0].textContent) return elems[0].textContent
+  }
+  return undefined
+}
+
+export interface SidecarTime {
+  /** Wall-clock capture time as epoch ms (fields interpreted as UTC). */
+  wallClockMs: number
+  /** Minutes east of UTC, when the sidecar value carries an offset. */
+  tzOffsetMin?: number
+}
+
+/** Read the capture time (exif:DateTimeOriginal) from an XMP sidecar. */
+export function readTimeFromXmp(xml: string, parser: DOMParser = new DOMParser()): SidecarTime | undefined {
+  const doc = parser.parseFromString(xml, 'application/xml')
+  if (doc.querySelector('parsererror')) return undefined
+  const raw = readXmpProp(doc, 'DateTimeOriginal')
+  if (!raw) return undefined
+  const m = raw
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/)
+  if (!m) return undefined
+  const wallClockMs = Date.UTC(
+    parseInt(m[1], 10),
+    parseInt(m[2], 10) - 1,
+    parseInt(m[3], 10),
+    parseInt(m[4], 10),
+    parseInt(m[5], 10),
+    m[6] ? parseInt(m[6], 10) : 0
+  )
+  let tzOffsetMin: number | undefined
+  const tz = m[7]
+  if (tz === 'Z') tzOffsetMin = 0
+  else if (tz) {
+    const tm = tz.match(/([+-])(\d{2}):?(\d{2})/)
+    if (tm) tzOffsetMin = (tm[1] === '-' ? -1 : 1) * (parseInt(tm[2], 10) * 60 + parseInt(tm[3], 10))
+  }
+  return { wallClockMs, tzOffsetMin }
+}
+
 /** Read GPS back out of an XMP sidecar (for verification and status display). */
 export function readGpsFromXmp(xml: string, parser: DOMParser = new DOMParser()): GeoPoint | undefined {
   const doc = parser.parseFromString(xml, 'application/xml')
   if (doc.querySelector('parsererror')) return undefined
 
-  const readProp = (local: string): string | undefined => {
-    for (const desc of elementsByLocalName(doc, 'Description')) {
-      const attr = attributeByLocalName(desc, local)
-      if (attr) return attr
-      const elems = elementsByLocalName(desc, local)
-      if (elems.length > 0 && elems[0].textContent) return elems[0].textContent
-    }
-    return undefined
-  }
+  const readProp = (local: string): string | undefined => readXmpProp(doc, local)
 
   const latStr = readProp('GPSLatitude')
   const lonStr = readProp('GPSLongitude')

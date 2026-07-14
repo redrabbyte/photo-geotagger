@@ -2,7 +2,7 @@ import type { Photo, Source, Track } from '../domain/types'
 import { isDirty } from '../domain/types'
 import { parseGpx, GpxParseError } from '../domain/parseGpx'
 import { enumerateFolder, fsaSupported, type FoundFile } from './fs/sources'
-import { readGpsFromXmp } from '../domain/xmp'
+import { readGpsFromXmp, readTimeFromXmp } from '../domain/xmp'
 import {
   ensurePermission,
   loadPersistedGpx,
@@ -168,7 +168,8 @@ function readSidecarsInBackground(photos: Photo[]): void {
       try {
         const text = await (await p.sidecarHandle.getFile()).text()
         const gps = readGpsFromXmp(text)
-        if (gps) queueUpdate({ id: p.id, kind: 'sidecar', gps })
+        const time = readTimeFromXmp(text)
+        if (gps || time) queueUpdate({ id: p.id, kind: 'sidecar', gps, time })
       } catch {
         // unreadable sidecar — photo simply keeps its embedded GPS (if any)
       }
@@ -523,7 +524,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
       onProgress: makeProgressReporter(),
     },
     (result) =>
-      useStore.getState().markTimeWriteResult(result.photoId, result.ok, result.error, result.timeCorrection)
+      useStore.getState().markTimeWriteResult(result.photoId, result.ok, result.error, result.timeCorrection, result.target)
   )
 
   useStore.getState().resetWriting(targets.map((p) => p.id))

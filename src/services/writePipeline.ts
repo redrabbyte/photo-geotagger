@@ -45,6 +45,8 @@ export interface WriteOptions {
  */
 export function timeCorrectionFor(photo: Photo, source: Source): TimeCorrection | undefined {
   const meta = photo.meta
+  // A sidecar time means the correction already lives next to the file.
+  if (photo.sidecarTime) return undefined
   if (!meta || meta.timeSource !== 'exif' || meta.timeCorrected) return undefined
   const needsShift = source.clockOffsetMs !== 0
   const needsTz = meta.tzOffsetMin === undefined

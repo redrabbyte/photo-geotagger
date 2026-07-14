@@ -124,7 +124,8 @@ export interface AppState {
     photoId: string,
     ok: boolean,
     error?: string,
-    timeCorrection?: { wallClockMs: number; tzOffsetMin: number }
+    timeCorrection?: { wallClockMs: number; tzOffsetMin: number },
+    target?: 'exif' | 'sidecar'
   ): void
   setWriteProgress(progress?: { done: number; total: number; current: string; etaMs?: number }): void
   setSettings(patch: Partial<AppSettings>): void
@@ -171,7 +172,7 @@ export interface AppState {
 export type ScanUpdate =
   | { id: string; kind: 'meta'; meta: PhotoMeta; sizeBytes?: number; lastModified?: number }
   | { id: string; kind: 'stat'; sizeBytes: number; lastModified: number }
-  | { id: string; kind: 'sidecar'; gps: GeoPoint }
+  | { id: string; kind: 'sidecar'; gps?: GeoPoint; time?: { wallClockMs: number; tzOffsetMin?: number } }
   | { id: string; kind: 'thumb'; url: string }
   | { id: string; kind: 'thumb-failed' }
   | { id: string; kind: 'error'; message: string }
@@ -247,7 +248,11 @@ export const useStore = create<AppState>((set, get) => ({
             photos[u.id] = { ...p, sizeBytes: u.sizeBytes, lastModified: u.lastModified }
             break
           case 'sidecar':
-            photos[u.id] = { ...p, sidecarGps: u.gps }
+            photos[u.id] = {
+              ...p,
+              sidecarGps: u.gps ?? p.sidecarGps,
+              sidecarTime: u.time ?? p.sidecarTime,
+            }
             break
           case 'thumb':
             photos[u.id] = { ...p, thumbUrl: u.url }
@@ -403,9 +408,10 @@ export const useStore = create<AppState>((set, get) => ({
       const p = s.photos[photoId]
       if (!p) return s
       let meta = p.meta
+      let sidecarTime = p.sidecarTime
       if (ok && meta && p.assignment) {
         meta = { ...meta, originalGps: p.assignment.point }
-        if (timeCorrection) {
+        if (timeCorrection && target === 'exif') {
           // The file now carries the corrected wall clock + timezone; the
           // source's offset must no longer be applied to this photo.
           meta = {
@@ -416,6 +422,11 @@ export const useStore = create<AppState>((set, get) => ({
           }
         }
       }
+      if (ok && timeCorrection && target === 'sidecar') {
+        // The correction lives in the sidecar, not the file — mirror what a
+        // re-import of the sidecar would read.
+        sidecarTime = { wallClockMs: timeCorrection.wallClockMs, tzOffsetMin: timeCorrection.tzOffsetMin }
+      }
       const updated: Photo = ok
         ? {
             ...p,
@@ -423,6 +434,7 @@ export const useStore = create<AppState>((set, get) => ({
             writeTarget: target,
             writeError: undefined,
             meta,
+            sidecarTime,
             sidecarGps: target === 'sidecar' && p.assignment ? p.assignment.point : p.sidecarGps,
           }
         : { ...p, writeState: 'write-error', writeError: error }
@@ -430,12 +442,18 @@ export const useStore = create<AppState>((set, get) => ({
     })
   },
 
-  markTimeWriteResult(photoId, ok, error, timeCorrection) {
+  markTimeWriteResult(photoId, ok, error, timeCorrection, target) {
     set((s) => {
       const p = s.photos[photoId]
       if (!p) return s
       if (!ok) {
         return { photos: { ...s.photos, [photoId]: { ...p, writeState: 'write-error', writeError: error } } }
+      }
+      if (timeCorrection && target === 'sidecar') {
+        // The correction lives in the sidecar; the file's EXIF is unchanged.
+        const sidecarTime = { wallClockMs: timeCorrection.wallClockMs, tzOffsetMin: timeCorrection.tzOffsetMin }
+        const writeState = p.assignment && p.writeState !== 'written' ? 'dirty' : p.writeState === 'writing' ? 'clean' : p.writeState
+        return { photos: { ...s.photos, [photoId]: { ...p, sidecarTime, writeState, writeError: undefined } } }
       }
       const meta =
         p.meta && timeCorrection
