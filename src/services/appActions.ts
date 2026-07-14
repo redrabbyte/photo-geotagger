@@ -10,7 +10,7 @@ import {
   rememberGpxHandles,
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
-import { timeCorrectionFor, writeBatch, writeTimeBatch } from './writePipeline'
+import { setExiftoolPoolSize, timeCorrectionFor, writeBatch, writeTimeBatch } from './writePipeline'
 import { useStore, nextSourceId, nextTrackId, makePhotoRecord, SOURCE_COLORS, type ScanUpdate } from '../state/store'
 
 let scanClient: ScanClient | undefined
@@ -439,6 +439,8 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
     }
   }
 
+  const timeConcurrency = store.settings.writeMode === 'exiftool' && store.settings.parallelExiftool ? 2 : 1
+  setExiftoolPoolSize(timeConcurrency)
   store.markWriting(targets.map((p) => p.id))
   const results = await writeTimeBatch(
     targets,
@@ -446,6 +448,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
     {
       mode: store.settings.writeMode,
       backupOriginals: store.settings.backupOriginals,
+      concurrency: timeConcurrency,
       onProgress: (done, total, current) =>
         useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
     },
@@ -495,6 +498,8 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
     }
   }
 
+  const gpsConcurrency = store.settings.writeMode === 'exiftool' && store.settings.parallelExiftool ? 2 : 1
+  setExiftoolPoolSize(gpsConcurrency)
   store.markWriting(targets.map((p) => p.id))
   const sourcesMap = new Map(Object.entries(store.sources))
   const results = await writeBatch(
@@ -504,6 +509,7 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
       mode: store.settings.writeMode,
       backupOriginals: store.settings.backupOriginals,
       writeCorrectedTime: store.settings.writeCorrectedTime,
+      concurrency: gpsConcurrency,
       onProgress: (done, total, current) =>
         useStore.getState().setWriteProgress(done < total ? { done, total, current } : undefined),
     },

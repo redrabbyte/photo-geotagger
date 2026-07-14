@@ -89,6 +89,21 @@ export function WriteBar() {
         Write corrected time
       </label>
 
+      {settings.writeMode === 'exiftool' && (
+        <label
+          className="checkbox-row"
+          title="Run two ExifTool workers so RAW/HEIC files are written in parallel — roughly halves the wall-clock time of large batches, at the cost of extra memory (each worker can peak at several hundred MB with big RAW files)."
+        >
+          <input
+            type="checkbox"
+            checked={settings.parallelExiftool}
+            onChange={(e) => useStore.getState().setSettings({ parallelExiftool: e.target.checked })}
+            disabled={writing}
+          />
+          2× parallel (RAW)
+        </label>
+      )}
+
       <span className="spacer" />
 
       {writing ? (

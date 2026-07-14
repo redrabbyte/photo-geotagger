@@ -29,6 +29,8 @@ export interface WriteOptions {
   backupOriginals: boolean
   /** Also write the clock-corrected capture time + timezone into the files. */
   writeCorrectedTime?: boolean
+  /** Photos written concurrently (>1 only useful for ExifTool RAW writes). */
+  concurrency?: number
   onProgress?: (done: number, total: number, current: string) => void
 }
 
@@ -49,34 +51,48 @@ export function timeCorrectionFor(photo: Photo, source: Source): TimeCorrection 
   }
 }
 
-/** Lazy singleton for the ExifTool worker; the 25 MB WASM loads on first use. */
-let exiftoolWorker: Worker | undefined
+/** Lazy pool of ExifTool workers; each loads the 25 MB WASM on first use. */
+let exiftoolWorkers: Worker[] = []
+let exiftoolPoolSize = 1
+let nextWorkerIndex = 0
 let nextRequestId = 1
 type SuccessResponse = Extract<ExiftoolResponse, { ok: true }>
 const pendingRequests = new Map<number, { resolve: (r: SuccessResponse) => void; reject: (e: Error) => void }>()
 
-function getExiftoolWorker(): Worker {
-  if (!exiftoolWorker) {
-    exiftoolWorker = new Worker(new URL('../workers/exiftool.worker.ts', import.meta.url), {
-      type: 'module',
-    })
-    exiftoolWorker.onmessage = (event: MessageEvent<ExiftoolResponse>) => {
-      const msg = event.data
-      const pending = pendingRequests.get(msg.requestId)
-      if (!pending) return
-      pendingRequests.delete(msg.requestId)
-      if (msg.ok) pending.resolve(msg)
-      else pending.reject(new Error(msg.error))
-    }
-    exiftoolWorker.onerror = (e) => {
-      const err = new Error(e.message || 'ExifTool worker crashed')
-      for (const p of pendingRequests.values()) p.reject(err)
-      pendingRequests.clear()
-      exiftoolWorker?.terminate()
-      exiftoolWorker = undefined
-    }
+/** 2 workers double RAW write throughput at the cost of memory. */
+export function setExiftoolPoolSize(n: number): void {
+  exiftoolPoolSize = Math.max(1, Math.min(4, n))
+}
+
+function makeExiftoolWorker(): Worker {
+  const worker = new Worker(new URL('../workers/exiftool.worker.ts', import.meta.url), {
+    type: 'module',
+  })
+  worker.onmessage = (event: MessageEvent<ExiftoolResponse>) => {
+    const msg = event.data
+    const pending = pendingRequests.get(msg.requestId)
+    if (!pending) return
+    pendingRequests.delete(msg.requestId)
+    if (msg.ok) pending.resolve(msg)
+    else pending.reject(new Error(msg.error))
   }
-  return exiftoolWorker
+  worker.onerror = (e) => {
+    const err = new Error(e.message || 'ExifTool worker crashed')
+    for (const p of pendingRequests.values()) p.reject(err)
+    pendingRequests.clear()
+    for (const w of exiftoolWorkers) w.terminate()
+    exiftoolWorkers = []
+  }
+  return worker
+}
+
+function getExiftoolWorker(): Worker {
+  if (exiftoolWorkers.length < exiftoolPoolSize) {
+    exiftoolWorkers.push(makeExiftoolWorker())
+    return exiftoolWorkers[exiftoolWorkers.length - 1]
+  }
+  nextWorkerIndex = (nextWorkerIndex + 1) % exiftoolWorkers.length
+  return exiftoolWorkers[nextWorkerIndex]
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
@@ -219,12 +235,14 @@ export async function writePhoto(
   if (!gps) throw new Error('Photo has no assigned position')
   const time = options.writeCorrectedTime ? timeCorrectionFor(photo, source) : undefined
 
-  if (options.mode === 'exiftool') {
-    await writeViaExiftool(photo, source, gps, options.backupOriginals, time)
-    return { target: 'exif', timeCorrection: time }
-  }
+  // JPEGs always take the pure-JS path (~50ms, identically verified) — the
+  // ExifTool WASM run (~2s/file) is reserved for formats that need it.
   if (photo.kind === 'jpeg') {
     await writeJpegInPlace(photo, source, gps, options.backupOriginals, time)
+    return { target: 'exif', timeCorrection: time }
+  }
+  if (options.mode === 'exiftool') {
+    await writeViaExiftool(photo, source, gps, options.backupOriginals, time)
     return { target: 'exif', timeCorrection: time }
   }
   await writeSidecar(photo, source, gps, time)
@@ -241,7 +259,7 @@ export async function writeTimeOnlyPhoto(
   options: WriteOptions,
   time: TimeCorrection
 ): Promise<'exif' | 'sidecar'> {
-  if (options.mode === 'exiftool') {
+  if (options.mode === 'exiftool' && photo.kind !== 'jpeg') {
     if (!photo.fileHandle) throw new Error('Missing file handle')
     const file = await photo.fileHandle.getFile()
     const original = await file.arrayBuffer()
@@ -280,60 +298,71 @@ export async function writeTimeBatch(
   options: WriteOptions,
   onResult: (result: WriteJobResult) => void
 ): Promise<WriteJobResult[]> {
-  const results: WriteJobResult[] = []
-  let done = 0
-  for (const photo of photos) {
-    options.onProgress?.(done, photos.length, photo.fileName)
-    const source = sources.get(photo.sourceId)
-    const time = source ? timeCorrectionFor(photo, source) : undefined
-    let result: WriteJobResult
-    if (!source) {
-      result = { photoId: photo.id, ok: false, error: 'Unknown source' }
-    } else if (!time) {
-      result = { photoId: photo.id, ok: false, error: 'Nothing to correct' }
-    } else {
+  return runWriteJobs(
+    photos,
+    options,
+    async (photo) => {
+      const source = sources.get(photo.sourceId)
+      const time = source ? timeCorrectionFor(photo, source) : undefined
+      if (!source) return { photoId: photo.id, ok: false, error: 'Unknown source' }
+      if (!time) return { photoId: photo.id, ok: false, error: 'Nothing to correct' }
       try {
         const target = await writeTimeOnlyPhoto(photo, source, options, time)
-        result = { photoId: photo.id, ok: true, target, timeCorrection: time }
+        return { photoId: photo.id, ok: true, target, timeCorrection: time }
       } catch (err) {
-        result = { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
+        return { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
       }
+    },
+    onResult
+  )
+}
+
+/** Run per-photo write jobs with bounded concurrency, preserving reporting. */
+async function runWriteJobs(
+  photos: Photo[],
+  options: WriteOptions,
+  job: (photo: Photo) => Promise<WriteJobResult>,
+  onResult: (result: WriteJobResult) => void
+): Promise<WriteJobResult[]> {
+  const results: WriteJobResult[] = []
+  const queue = [...photos]
+  let completed = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 1, photos.length)) }, async () => {
+    for (;;) {
+      const photo = queue.shift()
+      if (!photo) return
+      options.onProgress?.(completed, photos.length, photo.fileName)
+      const result = await job(photo)
+      completed++
+      results.push(result)
+      onResult(result)
     }
-    results.push(result)
-    onResult(result)
-    done++
-  }
-  options.onProgress?.(done, photos.length, '')
+  })
+  await Promise.all(workers)
+  options.onProgress?.(completed, photos.length, '')
   return results
 }
 
-/** Sequential batch write. Continues past per-file errors; reports each result. */
+/** Batch GPS writes. Continues past per-file errors; reports each result. */
 export async function writeBatch(
   photos: Photo[],
   sources: Map<string, Source>,
   options: WriteOptions,
   onResult: (result: WriteJobResult) => void
 ): Promise<WriteJobResult[]> {
-  const results: WriteJobResult[] = []
-  let done = 0
-  for (const photo of photos) {
-    options.onProgress?.(done, photos.length, photo.fileName)
-    const source = sources.get(photo.sourceId)
-    let result: WriteJobResult
-    if (!source) {
-      result = { photoId: photo.id, ok: false, error: 'Unknown source' }
-    } else {
+  return runWriteJobs(
+    photos,
+    options,
+    async (photo) => {
+      const source = sources.get(photo.sourceId)
+      if (!source) return { photoId: photo.id, ok: false, error: 'Unknown source' }
       try {
         const { target, timeCorrection } = await writePhoto(photo, source, options)
-        result = { photoId: photo.id, ok: true, target, timeCorrection }
+        return { photoId: photo.id, ok: true, target, timeCorrection }
       } catch (err) {
-        result = { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
+        return { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
       }
-    }
-    results.push(result)
-    onResult(result)
-    done++
-  }
-  options.onProgress?.(done, photos.length, '')
-  return results
+    },
+    onResult
+  )
 }

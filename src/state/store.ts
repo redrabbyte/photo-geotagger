@@ -56,6 +56,8 @@ interface AppSettings {
   backupOriginals: boolean
   /** Also write the clock-corrected capture time + timezone into files. */
   writeCorrectedTime: boolean
+  /** Use two ExifTool workers for RAW/HEIC writes (faster, more memory). */
+  parallelExiftool: boolean
   match: MatchSettings
 }
 
@@ -172,6 +174,7 @@ export const useStore = create<AppState>((set, get) => ({
     writeMode: 'safe',
     backupOriginals: true,
     writeCorrectedTime: false,
+    parallelExiftool: false,
     match: DEFAULT_MATCH_SETTINGS,
   },
   scanning: false,
