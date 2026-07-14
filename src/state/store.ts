@@ -23,9 +23,11 @@ import {
   moveDraftPoint,
   reinterpolateTimes,
   setDraftPointTime,
+  stretchDraftTimes,
   trackFromDraft,
   draftFromTrack,
   validateDraftTimes,
+  type DraftPoint,
   type TrackDraft,
 } from '../domain/trackDraft'
 import type { WriteMode } from '../services/writePipeline'
@@ -71,6 +73,8 @@ export interface AppState {
   /** Track being built/edited on the map. */
   draft?: TrackDraft
   draftSelectedIndex?: number
+  /** Fixed point for time-stretching sections of the draft. */
+  draftAnchorIndex?: number
   /** While set, the next map click places this draft endpoint. */
   draftPlacement?: { which: 'start' | 'end'; startT: number; endT: number }
   /** Active clock calibration: next map click sets the source's offset. */
@@ -109,6 +113,14 @@ export interface AppState {
   selectDraftPoint(index?: number): void
   /** Shift every draft point's time by the same delta (drag in the timeline). */
   shiftDraftTimes(deltaMs: number): void
+  /** Toggle the stretch anchor. */
+  setDraftAnchor(index?: number): void
+  /**
+   * Move point `index` to `newT`, scaling the section between it and
+   * `anchorIndex` time-proportionally; points beyond shift by the delta.
+   * `base` allows drag gestures to stretch from a snapshot.
+   */
+  stretchDraft(anchorIndex: number, index: number, newT: number, base?: DraftPoint[]): void
   copyTrack(trackId: string): void
   cancelDraft(): void
   /** Returns an error message, or undefined on success. */
@@ -397,7 +409,14 @@ export const useStore = create<AppState>((set, get) => ({
     const s = get()
     if (!s.draft) return -1
     const points = insertAutoPoint(s.draft.points, afterIndex, pos)
-    set({ draft: { ...s.draft, points }, draftSelectedIndex: afterIndex + 1 })
+    set({
+      draft: { ...s.draft, points },
+      draftSelectedIndex: afterIndex + 1,
+      draftAnchorIndex:
+        s.draftAnchorIndex !== undefined && s.draftAnchorIndex > afterIndex
+          ? s.draftAnchorIndex + 1
+          : s.draftAnchorIndex,
+    })
     return afterIndex + 1
   },
 
@@ -411,9 +430,13 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       if (!s.draft) return s
       const points = deleteDraftPoint(s.draft.points, index)
+      if (points === s.draft.points) return s
+      const adjust = (i?: number) =>
+        i === undefined || i === index ? undefined : i > index ? i - 1 : i
       return {
         draft: { ...s.draft, points },
-        draftSelectedIndex: s.draftSelectedIndex === index ? undefined : s.draftSelectedIndex,
+        draftSelectedIndex: adjust(s.draftSelectedIndex),
+        draftAnchorIndex: adjust(s.draftAnchorIndex),
       }
     })
   },
@@ -431,6 +454,22 @@ export const useStore = create<AppState>((set, get) => ({
       if (!s.draft || deltaMs === 0) return s
       const points = s.draft.points.map((p) => ({ ...p, t: p.t + deltaMs }))
       return { draft: { ...s.draft, points } }
+    })
+  },
+
+  setDraftAnchor(index) {
+    set((s) => ({ draftAnchorIndex: s.draftAnchorIndex === index ? undefined : index }))
+  },
+
+  stretchDraft(anchorIndex, index, newT, base) {
+    set((s) => {
+      if (!s.draft) return s
+      const source = base ?? s.draft.points
+      const points = stretchDraftTimes(source, anchorIndex, index, newT)
+      if (points === source && !base) return s
+      // The moved point's time was set deliberately: it becomes an anchor.
+      const marked = points.map((p, i) => (i === index ? { ...p, manual: true } : p))
+      return { draft: { ...s.draft, points: marked } }
     })
   },
 
@@ -453,7 +492,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   cancelDraft() {
-    set({ draft: undefined, draftPlacement: undefined, draftSelectedIndex: undefined })
+    set({ draft: undefined, draftPlacement: undefined, draftSelectedIndex: undefined, draftAnchorIndex: undefined })
   },
 
   commitDraft() {
@@ -473,6 +512,7 @@ export const useStore = create<AppState>((set, get) => ({
         draft: undefined,
         draftPlacement: undefined,
         draftSelectedIndex: undefined,
+        draftAnchorIndex: undefined,
       })
     } else {
       const id = nextTrackId()
@@ -483,6 +523,7 @@ export const useStore = create<AppState>((set, get) => ({
         draft: undefined,
         draftPlacement: undefined,
         draftSelectedIndex: undefined,
+        draftAnchorIndex: undefined,
       })
     }
     return undefined

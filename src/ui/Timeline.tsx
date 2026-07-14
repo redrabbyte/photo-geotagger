@@ -143,7 +143,7 @@ export function Timeline() {
       return
     }
 
-    // Draft bar (draggable to shift all point times).
+    // Draft bar (drag middle to shift, drag the end handles to stretch).
     if (draftRange) {
       const x0 = xOf(draftRange.start)
       const x1 = xOf(draftRange.end)
@@ -153,9 +153,12 @@ export function Timeline() {
       ctx.setLineDash([4, 3])
       ctx.strokeRect(x0 + 0.5, DRAFT_LANE_Y + 0.5, Math.max(4, x1 - x0) - 1, DRAFT_LANE_H - 1)
       ctx.setLineDash([])
+      // End handles for stretching.
       ctx.fillStyle = '#ffd54f'
+      ctx.fillRect(x0 - 2, DRAFT_LANE_Y - 1, 4, DRAFT_LANE_H + 2)
+      ctx.fillRect(x1 - 2, DRAFT_LANE_Y - 1, 4, DRAFT_LANE_H + 2)
       ctx.font = '9px system-ui'
-      ctx.fillText('⇔ drag to shift track time', Math.max(2, x0), DRAFT_LANE_Y + DRAFT_LANE_H + 8)
+      ctx.fillText('⇔ drag middle: shift · drag ends: stretch', Math.max(2, x0), DRAFT_LANE_Y + DRAFT_LANE_H + 8)
     }
 
     // Track coverage bars.
@@ -223,11 +226,29 @@ export function Timeline() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timed, tracks, domain, width, brush, hoverX, cursorMs, draftRange])
 
-  const isOnDraftBar = (x: number, y: number) =>
-    draftRange !== null &&
-    y <= DRAFT_LANE_Y + DRAFT_LANE_H + 4 &&
-    x >= xOf(draftRange.start) - 6 &&
-    x <= xOf(draftRange.end) + 6
+  /** What part of the draft bar a coordinate hits: an end handle, the middle, or nothing. */
+  const draftHit = (x: number, y: number): 'start' | 'end' | 'middle' | null => {
+    if (!draftRange || y > DRAFT_LANE_Y + DRAFT_LANE_H + 4) return null
+    const x0 = xOf(draftRange.start)
+    const x1 = xOf(draftRange.end)
+    const grip = 8
+    if (Math.abs(x - x0) <= grip) return 'start'
+    if (Math.abs(x - x1) <= grip) return 'end'
+    if (x > x0 && x < x1) return 'middle'
+    return null
+  }
+
+  /** Begin a stretch drag: one end moves, the other stays anchored. */
+  const makeStretcher = (which: 'start' | 'end') => {
+    const points = useStore.getState().draft?.points
+    if (!points || points.length < 2) return null
+    const anchorIndex = which === 'start' ? points.length - 1 : 0
+    const moveIndex = which === 'start' ? 0 : points.length - 1
+    const base = points.map((p) => ({ ...p }))
+    return (x: number) => {
+      useStore.getState().stretchDraft(anchorIndex, moveIndex, Math.round(tOf(x)), base)
+    }
+  }
 
   /** Click: set cursor, fly the map, focus the nearest photo. */
   const handleClick = (x: number) => {
@@ -256,7 +277,20 @@ export function Timeline() {
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
-    if (isOnDraftBar(x, y)) {
+    const hit = draftHit(x, y)
+    if (hit === 'start' || hit === 'end') {
+      const stretch = makeStretcher(hit)
+      if (!stretch) return
+      const onMove = (ev: MouseEvent) => stretch(ev.clientX - rect.left)
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+      return
+    }
+    if (hit === 'middle') {
       let lastX = x
       const onMove = (ev: MouseEvent) => {
         const mx = ev.clientX - rect.left
@@ -297,11 +331,12 @@ export function Timeline() {
 
   // ---- touch interactions: pinch zoom, pan, draft-shift, tap ----
   const touchState = useRef<{
-    mode: 'pan' | 'pinch' | 'draft'
+    mode: 'pan' | 'pinch' | 'draft' | 'stretch'
     lastX: number
     startX: number
     moved: boolean
     pinchDist?: number
+    stretch?: (x: number) => void
   } | null>(null)
 
   const onTouchStart = (e: React.TouchEvent) => {
@@ -314,8 +349,16 @@ export function Timeline() {
     }
     const x = e.touches[0].clientX - rect.left
     const y = e.touches[0].clientY - rect.top
+    const hit = draftHit(x, y)
+    if (hit === 'start' || hit === 'end') {
+      const stretch = makeStretcher(hit)
+      touchState.current = stretch
+        ? { mode: 'stretch', lastX: x, startX: x, moved: false, stretch }
+        : null
+      return
+    }
     touchState.current = {
-      mode: isOnDraftBar(x, y) ? 'draft' : 'pan',
+      mode: hit === 'middle' ? 'draft' : 'pan',
       lastX: x,
       startX: x,
       moved: false,
@@ -339,7 +382,9 @@ export function Timeline() {
     const x = e.touches[0].clientX - rect.left
     const dx = x - st.lastX
     if (Math.abs(x - st.startX) > 6) st.moved = true
-    if (st.mode === 'draft') {
+    if (st.mode === 'stretch') {
+      st.stretch?.(x)
+    } else if (st.mode === 'draft') {
       useStore.getState().shiftDraftTimes(dx * msPerPx)
     } else if (st.moved) {
       panBy(-dx * msPerPx)

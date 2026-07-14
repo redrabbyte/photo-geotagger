@@ -74,6 +74,7 @@ export function MapView() {
   const calibrate = useStore((s) => s.calibrate)
   const draft = useStore((s) => s.draft)
   const draftSelectedIndex = useStore((s) => s.draftSelectedIndex)
+  const draftAnchorIndex = useStore((s) => s.draftAnchorIndex)
   const draftPlacement = useStore((s) => s.draftPlacement)
 
   // Live values for event handlers registered once.
@@ -179,8 +180,8 @@ export function MapView() {
         paint: {
           'circle-radius': ['case', ['==', ['get', 'selected'], 1], 9, 7],
           'circle-color': ['case', ['==', ['get', 'manual'], 1], DRAFT_MANUAL_COLOR, DRAFT_AUTO_COLOR],
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': ['case', ['==', ['get', 'anchor'], 1], 4, 2],
+          'circle-stroke-color': ['case', ['==', ['get', 'anchor'], 1], DRAFT_LINE_COLOR, '#ffffff'],
         },
       })
 
@@ -457,12 +458,13 @@ export function MapView() {
             index,
             manual: p.manual ? 1 : 0,
             selected: index === draftSelectedIndex ? 1 : 0,
+            anchor: index === draftAnchorIndex ? 1 : 0,
           },
         })
       })
     }
     src.setData({ type: 'FeatureCollection', features })
-  }, [draft, draftSelectedIndex, mapReady])
+  }, [draft, draftSelectedIndex, draftAnchorIndex, mapReady])
 
   // Fit bounds once when positions first appear.
   useEffect(() => {

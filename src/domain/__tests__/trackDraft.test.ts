@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   insertAutoPoint,
+  stretchDraftTimes,
   setDraftPointTime,
   moveDraftPoint,
   deleteDraftPoint,
@@ -63,6 +64,52 @@ describe('manual time anchoring', () => {
     pts = deleteDraftPoint(pts, 1)
     expect(pts).toHaveLength(2)
     expect(deleteDraftPoint(pts, 0)).toHaveLength(2) // endpoint delete is a no-op
+  })
+})
+
+describe('stretchDraftTimes', () => {
+  const M = 60_000
+  // Five points: 0, 10, 20 (pause until 40), 40, 60 minutes.
+  const pts: DraftPoint[] = [
+    { lat: 50, lon: 8.0, t: T0, manual: true },
+    { lat: 50, lon: 8.005, t: T0 + 10 * M, manual: true },
+    { lat: 50, lon: 8.01, t: T0 + 20 * M, manual: true },
+    { lat: 50, lon: 8.01, t: T0 + 40 * M, manual: true },
+    { lat: 50, lon: 8.02, t: T0 + 60 * M, manual: true },
+  ]
+  it('scales intermediate times proportionally, preserving pauses', () => {
+    // Stretch point 3 (40min) to 80min, anchored at start: factor 2.
+    const out = stretchDraftTimes(pts, 0, 3, T0 + 80 * M)
+    expect((out[1].t - T0) / M).toBeCloseTo(20, 5)
+    expect((out[2].t - T0) / M).toBeCloseTo(40, 5)
+    expect((out[3].t - T0) / M).toBeCloseTo(80, 5)
+    // The 20-minute pause between idx2 and idx3 became 40 minutes: profile kept.
+    expect((out[3].t - out[2].t) / M).toBeCloseTo(40, 5)
+    // Point beyond the stretched end shifts by the delta (+40min).
+    expect((out[4].t - T0) / M).toBeCloseTo(100, 5)
+    // Anchor fixed.
+    expect(out[0].t).toBe(T0)
+  })
+
+  it('compresses when the new time is earlier', () => {
+    const out = stretchDraftTimes(pts, 0, 4, T0 + 30 * M)
+    expect((out[2].t - T0) / M).toBeCloseTo(10, 5)
+    expect((out[4].t - T0) / M).toBeCloseTo(30, 5)
+  })
+
+  it('anchoring at the end stretches leftwards; earlier points shift', () => {
+    // Move point 1 (10min) to -10min, anchor = last point (60min).
+    const out = stretchDraftTimes(pts, 4, 1, T0 - 10 * M)
+    expect((out[1].t - T0) / M).toBeCloseTo(-10, 5)
+    // Point 0 lies beyond the moved end (away from anchor): shifted by -20min.
+    expect((out[0].t - T0) / M).toBeCloseTo(-20, 5)
+    // Anchor fixed; intermediate scaled: idx2 was 40min before anchor → now 56min span * (70/50)...
+    expect(out[4].t).toBe(T0 + 60 * M)
+  })
+
+  it('refuses direction flips and degenerate spans', () => {
+    expect(stretchDraftTimes(pts, 0, 3, T0 - 5 * M)).toBe(pts)
+    expect(stretchDraftTimes(pts, 2, 2, T0)).toBe(pts)
   })
 })
 

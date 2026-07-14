@@ -72,6 +72,44 @@ export function setDraftPointTime(points: DraftPoint[], index: number, t: number
   return reinterpolateTimes(pts)
 }
 
+/**
+ * Stretch/compress a section of the track in time: the point at `index` moves
+ * to `newT` while `anchorIndex` stays fixed. Points between the two scale
+ * time-proportionally (each keeps its relative fraction of the span, so the
+ * recorded pace profile survives). Points beyond `index` — on the side away
+ * from the anchor — shift by the same delta so the track stays contiguous.
+ * Points on the anchor's far side are untouched.
+ */
+export function stretchDraftTimes(
+  points: DraftPoint[],
+  anchorIndex: number,
+  index: number,
+  newT: number
+): DraftPoint[] {
+  if (anchorIndex === index || anchorIndex < 0 || index < 0) return points
+  if (anchorIndex >= points.length || index >= points.length) return points
+  const tA = points[anchorIndex].t
+  const tB = points[index].t
+  const oldSpan = tB - tA
+  const newSpan = newT - tA
+  // Refuse degenerate or direction-flipping stretches.
+  if (oldSpan === 0 || newSpan === 0 || Math.sign(oldSpan) !== Math.sign(newSpan)) return points
+
+  const scale = newSpan / oldSpan
+  const delta = newT - tB
+  const lo = Math.min(anchorIndex, index)
+  const hi = Math.max(anchorIndex, index)
+  return points.map((p, i) => {
+    if (i > lo && i < hi) {
+      return { ...p, t: Math.round(tA + (p.t - tA) * scale) }
+    }
+    if (i === index) return { ...p, t: newT }
+    // Beyond the moved end, away from the anchor: shift to stay contiguous.
+    const beyond = index > anchorIndex ? i > index : i < index
+    return beyond ? { ...p, t: p.t + delta } : p
+  })
+}
+
 export function deleteDraftPoint(points: DraftPoint[], index: number): DraftPoint[] {
   if (index <= 0 || index >= points.length - 1) return points // endpoints stay
   const pts = points.filter((_, i) => i !== index)
