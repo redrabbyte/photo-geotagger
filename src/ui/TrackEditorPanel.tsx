@@ -17,18 +17,25 @@ function PointTimeEditor({ index, t, stretchFrom }: { index: number; t: number; 
   const [value, setValue] = useState(toLocalInput(t))
   useEffect(() => setValue(toLocalInput(t)), [t, index])
 
-  const commit = () => {
-    const ms = fromLocalInput(value)
+  /**
+   * quiet = called from onChange: commit valid values immediately but stay
+   * silent on partial input. Mobile browsers don't blur inputs when the user
+   * taps a canvas, so waiting for blur used to lose the edit entirely.
+   */
+  const commit = (raw: string, quiet: boolean) => {
+    const ms = fromLocalInput(raw)
     const store = useStore.getState()
     if (ms === undefined) {
-      store.notify('error', 'Invalid time')
-      setValue(toLocalInput(t))
+      if (!quiet) {
+        store.notify('error', 'Invalid time')
+        setValue(toLocalInput(t))
+      }
       return
     }
     if (stretchFrom !== undefined && stretchFrom !== index) {
       const before = store.draft?.points
       store.stretchDraft(stretchFrom, index, ms)
-      if (useStore.getState().draft?.points === before) {
+      if (!quiet && useStore.getState().draft?.points === before) {
         store.notify('error', 'Stretch rejected — the new time must stay on the same side of the anchor')
         setValue(toLocalInput(t))
       }
@@ -42,9 +49,12 @@ function PointTimeEditor({ index, t, stretchFrom }: { index: number; t: number; 
       type="datetime-local"
       step={1}
       value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === 'Enter' && commit()}
+      onChange={(e) => {
+        setValue(e.target.value)
+        commit(e.target.value, true)
+      }}
+      onBlur={() => commit(value, false)}
+      onKeyDown={(e) => e.key === 'Enter' && commit(value, false)}
     />
   )
 }
