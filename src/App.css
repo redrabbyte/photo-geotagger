@@ -255,6 +255,11 @@ h4 {
   animation: pulse 1.2s infinite alternate;
 }
 
+.track-item.gpx-pending {
+  animation: pulse 1.2s infinite alternate;
+  border-style: dashed;
+}
+
 @keyframes pulse {
   from { opacity: 0.55; }
   to { opacity: 1; }

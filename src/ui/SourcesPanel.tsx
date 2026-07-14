@@ -47,6 +47,7 @@ export function SourcesPanel() {
   const sources = useStore((s) => s.sources)
   const photos = useStore((s) => s.photos)
   const tracks = useStore((s) => s.tracks)
+  const pendingGpx = useStore((s) => s.pendingGpx)
   const scanning = useStore((s) => s.scanning)
   const [restorable, setRestorable] = useState<RestorableSource[]>([])
   const [restorableGpx, setRestorableGpx] = useState<RestorableGpx[]>([])
@@ -192,7 +193,16 @@ export function SourcesPanel() {
           </button>
         </span>
       </div>
-      {trackList.length === 0 && <p className="muted">Tracks found inside source folders load automatically.</p>}
+      {trackList.length === 0 && pendingGpx.length === 0 && (
+        <p className="muted">Tracks found inside source folders load automatically.</p>
+      )}
+      {pendingGpx.map((name) => (
+        <div className="track-item gpx-pending" key={`pending-${name}`}>
+          <span className="color-chip" style={{ background: '#666' }} />
+          <span className="track-name">{name}</span>
+          <span className="muted small">loading…</span>
+        </div>
+      ))}
       {trackList.map((t) => (
         <div className="track-item" key={t.id}>
           <span className="color-chip" style={{ background: t.color }} />

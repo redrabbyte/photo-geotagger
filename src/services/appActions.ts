@@ -165,6 +165,7 @@ async function ingestSource(source: Source): Promise<void> {
     }
 
     // GPX files found inside the folder are loaded as tracks automatically.
+    store.addPendingGpx(scan.gpxFiles.map((g) => g.name))
     for (const gpx of scan.gpxFiles) {
       try {
         const text = await (await gpx.handle.getFile()).text()
@@ -172,6 +173,8 @@ async function ingestSource(source: Source): Promise<void> {
         useStore.getState().addTracks(tracks)
       } catch (err) {
         store.notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${gpx.name}`)
+      } finally {
+        useStore.getState().removePendingGpx(gpx.name)
       }
     }
 
@@ -323,16 +326,20 @@ export async function addGpxFlow(): Promise<void> {
   } catch {
     return // cancelled
   }
+  // Show list entries immediately; each resolves into a real track when read.
+  store.addPendingGpx(handles.map((h) => h.name))
   const loaded: FileSystemFileHandle[] = []
   for (const handle of handles) {
     try {
       const file = await handle.getFile()
       const tracks: Track[] = parseGpx(await file.text(), file.name, () => nextTrackId())
-      store.addTracks(tracks)
+      useStore.getState().addTracks(tracks)
       loaded.push(handle)
       store.notify('success', `Loaded ${file.name}: ${tracks.reduce((n, t) => n + t.points.length, 0)} points`)
     } catch (err) {
       store.notify('error', err instanceof GpxParseError ? err.message : `Failed to parse ${handle.name}`)
+    } finally {
+      useStore.getState().removePendingGpx(handle.name)
     }
   }
   if (loaded.length > 0) await rememberGpxHandles(loaded)
@@ -355,13 +362,16 @@ export async function listRestorableGpx(): Promise<RestorableGpx[]> {
         store.notify('error', `Permission denied for "${p.name}" — pick the file again instead.`)
         return
       }
+      store.addPendingGpx([p.name])
       try {
         const file = await p.fileHandle.getFile()
         const tracks = parseGpx(await file.text(), file.name, () => nextTrackId())
-        store.addTracks(tracks)
+        useStore.getState().addTracks(tracks)
         store.notify('success', `Restored ${file.name}`)
       } catch (err) {
         store.notify('error', err instanceof GpxParseError ? err.message : `Failed to restore ${p.name}`)
+      } finally {
+        useStore.getState().removePendingGpx(p.name)
       }
     },
   }))

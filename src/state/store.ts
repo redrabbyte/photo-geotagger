@@ -77,6 +77,8 @@ export interface AppState {
   mapTarget?: { point: GeoPoint; zoom?: number; seq: number }
   /** Last clicked position on the timeline. */
   timelineCursorMs?: number
+  /** GPX files picked/being read but not parsed yet (shown as loading). */
+  pendingGpx: string[]
   /** Track being built/edited on the map. */
   draft?: TrackDraft
   draftSelectedIndex?: number
@@ -94,6 +96,8 @@ export interface AppState {
   setScanning(scanning: boolean): void
   addTracks(tracks: Track[]): void
   removeTrack(id: string): void
+  addPendingGpx(names: string[]): void
+  removePendingGpx(name: string): void
   setSelection(ids: Iterable<string>): void
   toggleSelected(id: string, additive: boolean): void
   setActivePhoto(id?: string): void
@@ -181,6 +185,7 @@ export const useStore = create<AppState>((set, get) => ({
   scanning: false,
   notices: [],
   snapToTrack: false,
+  pendingGpx: [],
 
   addSource(source, photos) {
     set((s) => {
@@ -267,6 +272,14 @@ export const useStore = create<AppState>((set, get) => ({
       delete tracks[id]
       return { tracks }
     })
+  },
+
+  addPendingGpx(names) {
+    set((s) => ({ pendingGpx: [...s.pendingGpx, ...names.filter((n) => !s.pendingGpx.includes(n))] }))
+  },
+
+  removePendingGpx(name) {
+    set((s) => ({ pendingGpx: s.pendingGpx.filter((n) => n !== name) }))
   },
 
   setSelection(ids) {
