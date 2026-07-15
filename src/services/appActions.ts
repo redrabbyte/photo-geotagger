@@ -11,6 +11,7 @@ import {
   rememberGpxHandles,
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
+import { makeEtaEstimator } from './eta'
 import {
   recommendedExiftoolPool,
   setExiftoolPoolSize,
@@ -123,9 +124,9 @@ export function requestWriteStop(): void {
 
 /** Progress reporter with a continuously updated time estimate. */
 function makeProgressReporter() {
-  const startedAt = Date.now()
+  const eta = makeEtaEstimator()
   return (done: number, total: number, current: string) => {
-    const etaMs = done > 0 ? ((Date.now() - startedAt) / done) * (total - done) : undefined
+    const etaMs = eta(done, total, Date.now())
     useStore.getState().setWriteProgress(done < total ? { done, total, current, etaMs } : undefined)
   }
 }
