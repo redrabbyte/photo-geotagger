@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { isDirty } from '../domain/types'
 import { useStore } from '../state/store'
-import { requestWriteStop, writeDirtyFlow, writeTimesFlow } from '../services/appActions'
+import { prepareExiftool, requestWriteStop, writeDirtyFlow, writeTimesFlow } from '../services/appActions'
 import { timeCorrectionFor, type WriteMode } from '../services/writePipeline'
 import { formatEtaMs } from './format'
 
@@ -106,15 +106,18 @@ export function WriteBar() {
       {settings.writeMode === 'exiftool' && (
         <label
           className="checkbox-row"
-          title="Run two ExifTool workers so RAW/HEIC files are written in parallel — roughly halves the wall-clock time of large batches, at the cost of extra memory (each worker can peak at several hundred MB with big RAW files)."
+          title="Run multiple ExifTool workers (2–4, scaled to this device's CPU and memory) so RAW/HEIC files are written in parallel — several times faster on large batches, at the cost of extra memory (each worker can peak at several hundred MB with big RAW files)."
         >
           <input
             type="checkbox"
             checked={settings.parallelExiftool}
-            onChange={(e) => useStore.getState().setSettings({ parallelExiftool: e.target.checked })}
+            onChange={(e) => {
+              useStore.getState().setSettings({ parallelExiftool: e.target.checked })
+              prepareExiftool()
+            }}
             disabled={writing}
           />
-          2× parallel (RAW)
+          Parallel (RAW)
         </label>
       )}
 
@@ -241,6 +244,9 @@ export function WriteBar() {
                 onClick={() => {
                   useStore.getState().setSettings({ writeMode: 'exiftool', backupOriginals: true })
                   setConfirmExiftool(false)
+                  // Boot the WASM workers now, while the user is still
+                  // assigning positions — the first write then starts warm.
+                  prepareExiftool()
                 }}
               >
                 Use ExifTool mode

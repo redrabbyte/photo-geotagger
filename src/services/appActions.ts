@@ -11,7 +11,14 @@ import {
   rememberGpxHandles,
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
-import { setExiftoolPoolSize, timeCorrectionFor, writeBatch, writeTimeBatch } from './writePipeline'
+import {
+  recommendedExiftoolPool,
+  setExiftoolPoolSize,
+  timeCorrectionFor,
+  warmupExiftool,
+  writeBatch,
+  writeTimeBatch,
+} from './writePipeline'
 import {
   useStore,
   nextSourceId,
@@ -25,12 +32,26 @@ import {
 /**
  * Safe-mode writes are pure FSA I/O: the per-file cost is fixed browser
  * round-trip latency (handle lookups, safe-browsing check on close), so
- * parallelism hides it almost linearly. ExifTool writes are CPU/memory-bound
- * WASM runs and stay limited to the worker pool size.
+ * parallelism hides it almost linearly. ExifTool mode keeps ~3 requests in
+ * flight per worker so each worker's queue coalesces into one Perl run
+ * (the workers batch internally), bounded to limit RAW buffers in memory.
  */
 function writeConcurrency(settings: AppSettings): number {
-  if (settings.writeMode === 'exiftool') return settings.parallelExiftool ? 2 : 1
+  if (settings.writeMode === 'exiftool') {
+    return Math.min(8, recommendedExiftoolPool(settings.parallelExiftool) * 3)
+  }
   return 6
+}
+
+/**
+ * Pre-boot the ExifTool workers in the background so the first RAW write
+ * skips the ~3 s cold start. Call when the user switches to ExifTool mode.
+ */
+export function prepareExiftool(): void {
+  const settings = useStore.getState().settings
+  if (settings.writeMode !== 'exiftool') return
+  setExiftoolPoolSize(recommendedExiftoolPool(settings.parallelExiftool))
+  warmupExiftool()
 }
 
 let scanClient: ScanClient | undefined
@@ -529,7 +550,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
   }
 
   const timeConcurrency = writeConcurrency(store.settings)
-  setExiftoolPoolSize(store.settings.parallelExiftool ? 2 : 1)
+  setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
   writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const results = await writeTimeBatch(
@@ -603,7 +624,7 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   }
 
   const gpsConcurrency = writeConcurrency(store.settings)
-  setExiftoolPoolSize(store.settings.parallelExiftool ? 2 : 1)
+  setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
   writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const sourcesMap = new Map(Object.entries(store.sources))

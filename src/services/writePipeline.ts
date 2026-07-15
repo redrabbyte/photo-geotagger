@@ -90,9 +90,41 @@ let nextRequestId = 1
 type SuccessResponse = Extract<ExiftoolResponse, { ok: true }>
 const pendingRequests = new Map<number, { resolve: (r: SuccessResponse) => void; reject: (e: Error) => void }>()
 
-/** 2 workers double RAW write throughput at the cost of memory. */
+/** More workers multiply RAW write throughput at the cost of memory. */
 export function setExiftoolPoolSize(n: number): void {
   exiftoolPoolSize = Math.max(1, Math.min(4, n))
+}
+
+/**
+ * Worker count for the parallel-ExifTool setting: scale with CPU and memory
+ * on desktop (each worker holds a ~25 MB WASM heap plus file buffers), stay
+ * conservative on mobile where memory pressure kills the tab.
+ */
+export function recommendedExiftoolPool(parallel: boolean): number {
+  if (!parallel) return 1
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  if (/Android|iPhone|iPad|Mobile/i.test(nav.userAgent)) return 2
+  const cores = nav.hardwareConcurrency ?? 4
+  const memGb = nav.deviceMemory ?? 4
+  return Math.max(2, Math.min(4, Math.floor(cores / 2), Math.floor(memGb / 2)))
+}
+
+/**
+ * Boot all pool workers in the background (WASM fetch + instantiation + one
+ * dummy run) so the first real write does not pay the ~3 s cold start.
+ * Fire-and-forget: failures surface on the first real write instead.
+ */
+export function warmupExiftool(): void {
+  while (exiftoolWorkers.length < exiftoolPoolSize) {
+    exiftoolWorkers.push(makeExiftoolWorker())
+  }
+  for (const worker of exiftoolWorkers) {
+    const requestId = nextRequestId++
+    new Promise<SuccessResponse>((resolve, reject) => {
+      pendingRequests.set(requestId, { resolve, reject })
+      worker.postMessage({ type: 'warmup', requestId } satisfies ExiftoolRequest)
+    }).catch(() => undefined)
+  }
 }
 
 function makeExiftoolWorker(): Worker {

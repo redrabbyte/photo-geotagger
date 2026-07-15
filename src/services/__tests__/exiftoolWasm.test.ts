@@ -1,10 +1,17 @@
 // Exercises the real ExifTool-WASM (zeroperl) write path in Node, the same
-// code the browser worker runs. Slow (~25 MB WASM instantiation) — kept as a
-// single test.
+// code the browser worker runs — now via the direct zeroperl runner that
+// batches many files into one Perl execution. Slow (~25 MB WASM
+// instantiation) — kept as a single file.
 import { describe, it, expect } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { writeMetadata, parseMetadata } from '@uswriting/exiftool'
+import exifr from 'exifr'
+import {
+  ExiftoolRunner,
+  extractExiftoolScript,
+  parseViaExiftool,
+  writeBatchViaExiftool,
+} from '../exif/exiftoolRunner'
 import { makeJpegWithExif } from './fixtures'
 
 const require = createRequire(import.meta.url)
@@ -22,48 +29,73 @@ const nodeFetch = async (...args: unknown[]): Promise<Response> => {
   return fetch(args[0] as RequestInfo, args[1] as RequestInit)
 }
 
-const GPS = { lat: 48.858093, lon: 2.294694 }
+const GPS_A = { lat: 48.858093, lon: 2.294694 }
+const GPS_B = { lat: -33.856784, lon: 151.215297 }
 
-describe('exiftool wasm', () => {
-  it('writes GPS into a JPEG and reads it back', { timeout: 120_000 }, async () => {
-    const jpeg = new Uint8Array(makeJpegWithExif('2026:06:01 12:34:56'))
-    const written = await writeMetadata(
-      { name: 'test.jpg', data: jpeg },
+describe('exiftool runner', () => {
+  it('extracts the embedded ExifTool script from the wrapper bundle', () => {
+    const script = extractExiftoolScript()
+    expect(script.startsWith('use strict')).toBe(true)
+    expect(script).toContain('Image::ExifTool')
+    expect(script.length).toBeGreaterThan(50_000)
+  })
+
+  it('writes several files in one Perl run, with per-file errors', { timeout: 180_000 }, async () => {
+    const runner = new ExiftoolRunner(nodeFetch)
+    const results = await writeBatchViaExiftool(runner, [
       {
-        GPSLatitude: Math.abs(GPS.lat),
-        GPSLatitudeRef: 'N',
-        GPSLongitude: Math.abs(GPS.lon),
-        GPSLongitudeRef: 'E',
-        // Clock correction: +1h and explicit timezone.
-        DateTimeOriginal: '2026:06:01 13:34:56',
-        OffsetTimeOriginal: '+02:00',
+        name: 'a.jpg',
+        bytes: new Uint8Array(makeJpegWithExif('2026:06:01 12:34:56')),
+        tags: {
+          GPSLatitude: Math.abs(GPS_A.lat),
+          GPSLatitudeRef: 'N',
+          GPSLongitude: Math.abs(GPS_A.lon),
+          GPSLongitudeRef: 'E',
+          // Clock correction: +1h and explicit timezone.
+          DateTimeOriginal: '2026:06:01 13:34:56',
+          OffsetTimeOriginal: '+02:00',
+        },
       },
-      { fetch: nodeFetch }
-    )
-    expect(written.success, written.success ? '' : written.error).toBe(true)
-    if (!written.success) return
-
-    // writeMetadata returns an ArrayBuffer in practice (typed as Uint8Array);
-    // it must be wrapped or the verify pass sees an empty file.
-    const outBytes =
-      written.data instanceof Uint8Array
-        ? written.data
-        : new Uint8Array(written.data as unknown as ArrayBuffer)
-
-    const verify = await parseMetadata<Array<Record<string, unknown>>>(
-      { name: 'test.jpg', data: outBytes },
       {
-        args: ['-json', '-n', '-GPSLatitude', '-GPSLongitude', '-DateTimeOriginal', '-OffsetTimeOriginal'],
-        transform: (s) => JSON.parse(s) as Array<Record<string, unknown>>,
-        fetch: nodeFetch,
-      }
-    )
-    expect(verify.success).toBe(true)
-    if (!verify.success) return
-    const entry = verify.data[0]
-    expect(entry.GPSLatitude as number).toBeCloseTo(GPS.lat, 4)
-    expect(entry.GPSLongitude as number).toBeCloseTo(GPS.lon, 4)
+        name: 'broken.jpg',
+        bytes: new Uint8Array([1, 2, 3, 4]),
+        tags: { GPSLatitude: 1, GPSLatitudeRef: 'N', GPSLongitude: 1, GPSLongitudeRef: 'E' },
+      },
+      {
+        name: 'b.jpg',
+        bytes: new Uint8Array(makeJpegWithExif('2026:06:02 08:00:00')),
+        tags: {
+          GPSLatitude: Math.abs(GPS_B.lat),
+          GPSLatitudeRef: 'S',
+          GPSLongitude: Math.abs(GPS_B.lon),
+          GPSLongitudeRef: 'E',
+        },
+      },
+    ])
+
+    expect(results).toHaveLength(3)
+    expect(results[0].ok, results[0].ok ? '' : results[0].error).toBe(true)
+    expect(results[1].ok).toBe(false)
+    expect(results[2].ok, results[2].ok ? '' : results[2].error).toBe(true)
+    if (!results[0].ok || !results[2].ok) return
+
+    const a = await exifr.parse(results[0].bytes.slice().buffer, { tiff: true, exif: true, gps: true })
+    expect(a.latitude as number).toBeCloseTo(GPS_A.lat, 4)
+    expect(a.longitude as number).toBeCloseTo(GPS_A.lon, 4)
+    expect(a.OffsetTimeOriginal).toBe('+02:00')
+
+    const b = await exifr.parse(results[2].bytes.slice().buffer, { tiff: true, exif: true, gps: true })
+    expect(b.latitude as number).toBeCloseTo(GPS_B.lat, 4)
+    expect(b.longitude as number).toBeCloseTo(GPS_B.lon, 4)
+
+    // The verification read path (ExifTool fallback) works on the same runner.
+    const verify = await parseViaExiftool(runner, 'a.jpg', results[0].bytes, [
+      '-json',
+      '-n',
+      '-DateTimeOriginal',
+    ])
+    expect(verify.success, verify.error).toBe(true)
+    const entry = (JSON.parse(verify.output) as Array<Record<string, unknown>>)[0]
     expect(entry.DateTimeOriginal).toBe('2026:06:01 13:34:56')
-    expect(entry.OffsetTimeOriginal).toBe('+02:00')
   })
 })
