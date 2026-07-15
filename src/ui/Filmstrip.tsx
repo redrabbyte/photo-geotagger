@@ -23,6 +23,8 @@ export function Filmstrip() {
   const [viewWidth, setViewWidth] = useState(1200)
   // Touch-friendly multi-select: taps toggle instead of replacing selection.
   const [multiSelect, setMultiSelect] = useState(false)
+  // Hide photos that already have a position (original GPS, sidecar, or assigned).
+  const [hideTagged, setHideTagged] = useState(false)
   // Range mode ("from–to"): first tap marks the start, second tap selects the range.
   const [rangeMode, setRangeMode] = useState(false)
   const [rangeStart, setRangeStart] = useState<string | null>(null)
@@ -37,14 +39,16 @@ export function Filmstrip() {
     return () => obs.disconnect()
   }, [])
 
+  const allCount = Object.keys(photos).length
   const ordered: Photo[] = useMemo(() => {
-    const list = Object.values(photos)
+    let list = Object.values(photos)
+    if (hideTagged) list = list.filter((p) => gpsStatus(p) === 'none')
     const timeOf = (p: Photo) => {
       const src = sources[p.sourceId]
       return (src && effectiveUtcMs(p, src)) ?? p.lastModified
     }
     return list.sort((a, b) => timeOf(a) - timeOf(b) || a.id.localeCompare(b.id))
-  }, [photos, sources])
+  }, [photos, sources, hideTagged])
 
   // Scroll the active photo into view (e.g. after a timeline click).
   useEffect(() => {
@@ -110,7 +114,7 @@ export function Filmstrip() {
     lastClickedRef.current = photo.id
   }
 
-  if (ordered.length === 0) {
+  if (allCount === 0) {
     return <div className="filmstrip filmstrip-empty">Add a photo folder to get started</div>
   }
 
@@ -141,10 +145,17 @@ export function Filmstrip() {
           </>
         )}
         <button
-          title="Select all photos"
+          title="Select all photos (with the filter active: all shown photos)"
           onClick={() => useStore.getState().setSelection(ordered.map((p) => p.id))}
         >
           all
+        </button>
+        <button
+          className={hideTagged ? 'primary' : ''}
+          title="Show only photos that have no position yet — original GPS, sidecar GPS, and assigned positions are hidden"
+          onClick={() => setHideTagged((v) => !v)}
+        >
+          {hideTagged ? `untagged ${ordered.length}/${allCount}` : 'untagged only'}
         </button>
       </div>
       <div
@@ -155,6 +166,9 @@ export function Filmstrip() {
         setViewWidth(e.currentTarget.clientWidth)
       }}
     >
+      {ordered.length === 0 && (
+        <div className="filmstrip-empty">All photos have a position — filter active</div>
+      )}
       <div className="filmstrip-inner" style={{ width: ordered.length * ITEM_W }}>
         {visible.map((p, i) => {
           const idx = first + i
