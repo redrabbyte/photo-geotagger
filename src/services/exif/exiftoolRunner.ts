@@ -57,6 +57,19 @@ export function extractExiftoolScript(bundleSource: string = wrapperBundleSource
   return script
 }
 
+/**
+ * Fatal WASM runtime faults — the interpreter instance is unusable afterwards
+ * (typically after the browser froze or partially evicted a backgrounded tab).
+ * Recoverable by rebuilding the instance and retrying; NOT true for logical
+ * errors like failed verification.
+ */
+const FATAL_WASM_RE =
+  /memory access out of bounds|table index is out of bounds|unreachable|null function or function signature mismatch|call_indirect|RuntimeError/i
+
+export function isFatalWasmError(message: string): boolean {
+  return FATAL_WASM_RE.test(message)
+}
+
 export interface RunResult {
   success: boolean
   exitCode: number
@@ -79,6 +92,21 @@ export class ExiftoolRunner {
 
   constructor(fetchImpl?: FetchLike) {
     this.fetchImpl = fetchImpl
+  }
+
+  /**
+   * Throw away the (possibly corrupted) interpreter so the next run boots a
+   * fresh one. Used to recover from fatal WASM faults — e.g. "memory access
+   * out of bounds" after the browser froze/evicted a backgrounded tab.
+   */
+  rebuild(): void {
+    try {
+      this.perl?.dispose()
+    } catch {
+      // a corrupted instance may fail to dispose — abandon it either way
+    }
+    this.perl = undefined
+    this.fs = undefined
   }
 
   /** Instantiate the WASM interpreter (the one-time ~25 MB cost). */

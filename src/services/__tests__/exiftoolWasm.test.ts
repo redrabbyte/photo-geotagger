@@ -9,9 +9,11 @@ import exifr from 'exifr'
 import {
   ExiftoolRunner,
   extractExiftoolScript,
+  isFatalWasmError,
   parseViaExiftool,
   writeBatchViaExiftool,
 } from '../exif/exiftoolRunner'
+import { isRecoverableWriteError } from '../writePipeline'
 import { makeJpegWithExif } from './fixtures'
 
 const require = createRequire(import.meta.url)
@@ -38,6 +40,25 @@ describe('exiftool runner', () => {
     expect(script.startsWith('use strict')).toBe(true)
     expect(script).toContain('Image::ExifTool')
     expect(script.length).toBeGreaterThan(50_000)
+  })
+
+  it('classifies fatal WASM faults as recoverable, logical errors not', () => {
+    expect(isFatalWasmError('memory access out of bounds')).toBe(true)
+    expect(isFatalWasmError('RuntimeError: unreachable executed')).toBe(true)
+    expect(isRecoverableWriteError('memory access out of bounds')).toBe(true)
+    expect(isRecoverableWriteError('ExifTool worker crashed')).toBe(true)
+    expect(isFatalWasmError('GPS missing from rewritten file — refusing to overwrite original')).toBe(false)
+    expect(isRecoverableWriteError('Existing sidecar is malformed')).toBe(false)
+  })
+
+  it('keeps working after a rebuild (crash recovery path)', { timeout: 180_000 }, async () => {
+    const runner = new ExiftoolRunner(nodeFetch)
+    const first = await runner.run(['-ver'], [])
+    expect(first.success).toBe(true)
+    runner.rebuild()
+    const second = await runner.run(['-ver'], [])
+    expect(second.success).toBe(true)
+    expect(second.stdout.trim()).toBe(first.stdout.trim())
   })
 
   it('writes several files in one Perl run, with per-file errors', { timeout: 180_000 }, async () => {

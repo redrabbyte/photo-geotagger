@@ -14,6 +14,7 @@ import { ScanClient } from './scanClient'
 import { makeEtaEstimator } from './eta'
 import {
   recommendedExiftoolPool,
+  resetIdleExiftoolWorkers,
   setExiftoolPoolSize,
   timeCorrectionFor,
   warmupExiftool,
@@ -53,6 +54,17 @@ export function prepareExiftool(): void {
   if (settings.writeMode !== 'exiftool') return
   setExiftoolPoolSize(recommendedExiftoolPool(settings.parallelExiftool))
   warmupExiftool()
+}
+
+// A tab frozen in the background can leave the workers' WASM memory corrupted
+// ("memory access out of bounds" on the next write). When the tab becomes
+// visible again, recycle idle workers and re-warm — writes in flight are left
+// alone (their failures are retried by the pipeline instead).
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (resetIdleExiftoolWorkers()) prepareExiftool()
+  })
 }
 
 let scanClient: ScanClient | undefined

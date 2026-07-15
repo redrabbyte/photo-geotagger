@@ -9,6 +9,7 @@ import {
   validateJpegOutput,
   type TimeCorrection,
 } from './exif/writeJpeg'
+import { isFatalWasmError } from './exif/exiftoolRunner'
 import { backupOriginal, writeFileBytes } from './fs/safeWrite'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
@@ -107,6 +108,30 @@ export function recommendedExiftoolPool(parallel: boolean): number {
   const cores = nav.hardwareConcurrency ?? 4
   const memGb = nav.deviceMemory ?? 4
   return Math.max(2, Math.min(4, Math.floor(cores / 2), Math.floor(memGb / 2)))
+}
+
+/**
+ * A write failure worth ONE automatic retry: the WASM interpreter faulted
+ * (corrupted after a background-tab freeze — the worker rebuilds it) or the
+ * whole worker crashed (the pool is recreated on the next request). The
+ * file was never touched, so retrying is safe; verification failures and
+ * real I/O errors are NOT retried.
+ */
+export function isRecoverableWriteError(message: string): boolean {
+  return isFatalWasmError(message) || /worker crashed/i.test(message)
+}
+
+/**
+ * Terminate idle ExifTool workers so the next write boots fresh instances.
+ * Used when a backgrounded tab becomes visible again: a frozen tab can leave
+ * WASM memory corrupted ("memory access out of bounds" on the next write).
+ * No-op while a write is in flight. Returns true when workers were recycled.
+ */
+export function resetIdleExiftoolWorkers(): boolean {
+  if (exiftoolWorkers.length === 0 || pendingRequests.size > 0) return false
+  for (const w of exiftoolWorkers) w.terminate()
+  exiftoolWorkers = []
+  return true
 }
 
 /**
@@ -403,7 +428,12 @@ async function runWriteJobs(
       const photo = queue.shift()
       if (!photo) return
       options.onProgress?.(completed, photos.length, photo.fileName)
-      const result = await job(photo)
+      let result = await job(photo)
+      if (!result.ok && result.error && isRecoverableWriteError(result.error)) {
+        // The worker rebuilt its interpreter (or the crashed pool will be
+        // recreated) — the file is untouched, so one retry is safe.
+        result = await job(photo)
+      }
       completed++
       results.push(result)
       onResult(result)

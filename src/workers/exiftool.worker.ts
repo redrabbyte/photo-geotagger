@@ -16,6 +16,7 @@ import exifr from 'exifr'
 import zeroperlWasmUrl from '../../node_modules/@6over3/zeroperl-ts/dist/esm/zeroperl.wasm?url'
 import {
   ExiftoolRunner,
+  isFatalWasmError,
   parseViaExiftool,
   writeBatchViaExiftool,
   type BatchWriteItem,
@@ -136,13 +137,9 @@ async function verifyOutput(
   }
 
   // exifr could not parse this format — fall back to a full ExifTool read.
-  const verify = await parseViaExiftool(runner, fileName, outBytes, [
-    '-json',
-    '-n',
-    '-GPSLatitude',
-    '-GPSLongitude',
-    '-DateTimeOriginal',
-  ])
+  const verify = await withWasmRecovery(() =>
+    parseViaExiftool(runner, fileName, outBytes, ['-json', '-n', '-GPSLatitude', '-GPSLongitude', '-DateTimeOriginal'])
+  )
   if (!verify.success) throw new Error(`verification read failed: ${verify.error}`)
   const entry = (JSON.parse(verify.output) as Array<Record<string, unknown>>)[0] ?? {}
   if (gps) {
@@ -166,7 +163,9 @@ async function verifyOutput(
  * GPS that gallery apps read even when the EXIF GPS was stripped.
  */
 async function inspect(fileName: string, bytes: ArrayBuffer): Promise<string> {
-  const result = await parseViaExiftool(runner, fileName, new Uint8Array(bytes), ['-ee', '-a', '-G3:1', '-s'])
+  const result = await withWasmRecovery(() =>
+    parseViaExiftool(runner, fileName, new Uint8Array(bytes), ['-ee', '-a', '-G3:1', '-s'])
+  )
   if (!result.success) throw new Error(result.error || 'exiftool failed')
   return result.output
 }
@@ -178,6 +177,22 @@ const MAX_BATCH = 4
 
 const queue: ExiftoolRequest[] = []
 let pumping = false
+
+/**
+ * Run fn; on a fatal WASM fault (corrupted interpreter, e.g. after the tab
+ * was frozen in the background) rebuild the instance and retry once. The
+ * input bytes are still intact in this worker, so the retry is free.
+ */
+async function withWasmRecovery<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (!isFatalWasmError(msg)) throw err
+    runner.rebuild()
+    return await fn()
+  }
+}
 
 function fail(requestId: number, err: unknown): void {
   postMessage({
@@ -194,7 +209,7 @@ async function handleWriteBatch(requests: WriteRequest[]): Promise<void> {
     bytes: new Uint8Array(r.bytes),
     tags: tagsFor(r.gps, r.timeCorrection),
   }))
-  const results = await writeBatchViaExiftool(runner, items)
+  const results = await withWasmRecovery(() => writeBatchViaExiftool(runner, items))
   for (let i = 0; i < requests.length; i++) {
     const req = requests[i]
     const res = results[i]
@@ -257,8 +272,10 @@ async function pump(): Promise<void> {
         try {
           // Boot the interpreter and run once so the first real write does
           // not pay the cold start (WASM fetch + instantiation).
-          await runner.boot()
-          const warm = await runner.run(['-ver'], [])
+          const warm = await withWasmRecovery(async () => {
+            await runner.boot()
+            return runner.run(['-ver'], [])
+          })
           postMessage({
             type: 'result',
             requestId: first.requestId,
