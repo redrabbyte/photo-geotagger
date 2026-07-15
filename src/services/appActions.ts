@@ -106,6 +106,7 @@ function getScanClient(): ScanClient {
       onIdle: () => {
         flushUpdates()
         useStore.getState().setScanning(false)
+        statMissingInBackground()
       },
     })
   }
@@ -183,20 +184,39 @@ async function persistCurrentSources(): Promise<void> {
  * on Android's SAF each call is slow — blocking ingestion on it made large
  * folders appear to do nothing at all. Results stream in as batched updates.
  */
-function statPhotosInBackground(photos: Photo[]): void {
+/**
+ * Backfill size/mtime for photos whose metadata scan did not deliver them
+ * (scan errors, unsupported content). Runs only AFTER the scan queue drains:
+ * the previous upfront stat pass over every file (50 parallel getFile calls)
+ * competed with the scan workers for Android SAF's serialized IPC channel
+ * and slowed the bulk of the import down — successful scans return size and
+ * mtime anyway.
+ */
+let statBackfillRunning = false
+function statMissingInBackground(): void {
+  if (statBackfillRunning) return
+  const missing = Object.values(useStore.getState().photos).filter(
+    (p) => p.fileHandle && p.lastModified === 0
+  )
+  if (missing.length === 0) return
+  statBackfillRunning = true
   void (async () => {
-    const CHUNK = 50
-    for (let i = 0; i < photos.length; i += CHUNK) {
-      await Promise.all(
-        photos.slice(i, i + CHUNK).map(async (p) => {
-          try {
-            const file = await p.fileHandle!.getFile()
-            queueUpdate({ id: p.id, kind: 'stat', sizeBytes: file.size, lastModified: file.lastModified })
-          } catch {
-            // stat failed — the scan worker will retry via getFile anyway
-          }
-        })
-      )
+    try {
+      const CHUNK = 4
+      for (let i = 0; i < missing.length; i += CHUNK) {
+        await Promise.all(
+          missing.slice(i, i + CHUNK).map(async (p) => {
+            try {
+              const file = await p.fileHandle!.getFile()
+              queueUpdate({ id: p.id, kind: 'stat', sizeBytes: file.size, lastModified: file.lastModified })
+            } catch {
+              // still unreadable — the photo's scan-error badge covers it
+            }
+          })
+        )
+      }
+    } finally {
+      statBackfillRunning = false
     }
   })()
 }
@@ -242,11 +262,12 @@ async function ingestSource(source: Source): Promise<void> {
         photos.push(record)
       }
     }
-    // Photos appear immediately; scanning starts immediately; stats stream in.
+    // Photos appear immediately; scanning starts immediately. Size/mtime
+    // arrive with each photo's metadata scan (no separate stat pass — see
+    // statMissingInBackground).
     store.addSource(source, photos)
     if (photos.length > 0) {
       getScanClient().enqueue(photos.map((p) => ({ id: p.id, handle: p.fileHandle!, kind: p.kind })))
-      statPhotosInBackground(photos)
       readSidecarsInBackground(photos)
     } else {
       store.setScanning(false)
