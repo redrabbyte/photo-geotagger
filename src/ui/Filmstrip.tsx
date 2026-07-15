@@ -23,8 +23,9 @@ export function Filmstrip() {
   const [viewWidth, setViewWidth] = useState(1200)
   // Touch-friendly multi-select: taps toggle instead of replacing selection.
   const [multiSelect, setMultiSelect] = useState(false)
-  // Hide photos that already have a position (original GPS, sidecar, or assigned).
-  const [hideTagged, setHideTagged] = useState(false)
+  // Filter: everything → only photos without a position (Android-stripped
+  // excluded) → also photos whose GPS tags were stripped empty.
+  const [filterMode, setFilterMode] = useState<'all' | 'untagged' | 'untagged+stripped'>('all')
   // Range mode ("from–to"): first tap marks the start, second tap selects the range.
   const [rangeMode, setRangeMode] = useState(false)
   const [rangeStart, setRangeStart] = useState<string | null>(null)
@@ -42,13 +43,19 @@ export function Filmstrip() {
   const allCount = Object.keys(photos).length
   const ordered: Photo[] = useMemo(() => {
     let list = Object.values(photos)
-    if (hideTagged) list = list.filter((p) => gpsStatus(p) === 'none')
+    if (filterMode === 'untagged') {
+      // Stripped photos (empty GPS tags) had a position on the phone — they
+      // are not "missing" a tag, so the base filter leaves them out.
+      list = list.filter((p) => gpsStatus(p) === 'none' && !p.meta?.gpsEmpty)
+    } else if (filterMode === 'untagged+stripped') {
+      list = list.filter((p) => gpsStatus(p) === 'none')
+    }
     const timeOf = (p: Photo) => {
       const src = sources[p.sourceId]
       return (src && effectiveUtcMs(p, src)) ?? p.lastModified
     }
     return list.sort((a, b) => timeOf(a) - timeOf(b) || a.id.localeCompare(b.id))
-  }, [photos, sources, hideTagged])
+  }, [photos, sources, filterMode])
 
   // Scroll the active photo into view (e.g. after a timeline click).
   useEffect(() => {
@@ -151,11 +158,17 @@ export function Filmstrip() {
           all
         </button>
         <button
-          className={hideTagged ? 'primary' : ''}
-          title="Show only photos that have no position yet — original GPS, sidecar GPS, and assigned positions are hidden"
-          onClick={() => setHideTagged((v) => !v)}
+          className={filterMode !== 'all' ? 'primary' : ''}
+          title="Cycle the filter: all photos → only photos without any position (Android-stripped ones excluded — they had GPS on the phone) → untagged plus stripped photos (GPS tags present but emptied)"
+          onClick={() =>
+            setFilterMode((m) => (m === 'all' ? 'untagged' : m === 'untagged' ? 'untagged+stripped' : 'all'))
+          }
         >
-          {hideTagged ? `untagged ${ordered.length}/${allCount}` : 'untagged only'}
+          {filterMode === 'all'
+            ? 'untagged only'
+            : filterMode === 'untagged'
+              ? `untagged ${ordered.length}/${allCount}`
+              : `untagged+stripped ${ordered.length}/${allCount}`}
         </button>
       </div>
       <div
