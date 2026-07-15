@@ -28,6 +28,7 @@ export function Timeline() {
   const tracks = useStore((s) => s.tracks)
   const selectedIds = useStore((s) => s.selectedIds)
   const cursorMs = useStore((s) => s.timelineCursorMs)
+  const timelineTarget = useStore((s) => s.timelineTarget)
   const draft = useStore((s) => s.draft)
   const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
   const [hoverX, setHoverX] = useState<number | null>(null)
@@ -113,6 +114,21 @@ export function Timeline() {
     if (!d) return
     setView({ min: d.min + deltaMs, max: d.max + deltaMs })
   }
+
+  // Bring a requested time into view (e.g. a photo clicked in the filmstrip):
+  // keep the current zoom level and center on it if it is (nearly) off-screen.
+  useEffect(() => {
+    if (!timelineTarget) return
+    const t = timelineTarget.t
+    setView((v) => {
+      if (!v) return v // fit-all view already shows everything
+      const span = v.max - v.min
+      const margin = span * 0.1
+      if (t >= v.min + margin && t <= v.max - margin) return v
+      return { min: t - span / 2, max: t + span / 2 }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineTarget?.seq])
 
   // Wheel zoom/pan needs a non-passive listener to preventDefault.
   useEffect(() => {

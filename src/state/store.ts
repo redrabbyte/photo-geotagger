@@ -83,6 +83,8 @@ export interface AppState {
   mapTarget?: { point: GeoPoint; zoom?: number; seq: number }
   /** Last clicked position on the timeline. */
   timelineCursorMs?: number
+  /** One-shot command for the timeline to bring a time into view. */
+  timelineTarget?: { t: number; seq: number }
   /** GPX files picked/being read but not parsed yet (shown as loading). */
   pendingGpx: string[]
   /** Track being built/edited on the map. */
@@ -135,6 +137,8 @@ export interface AppState {
   setSnapToTrack(snap: boolean): void
   flyTo(point: GeoPoint, zoom?: number): void
   setTimelineCursor(tMs: number): void
+  /** Move the timeline cursor to t and pan the view there if it is off-screen. */
+  revealInTimeline(t: number): void
 
   /** Start a new manual track; placement of endpoints happens via map clicks. */
   startNewDraft(name: string, startT: number, endT: number, startPoint?: GeoPoint): void
@@ -493,6 +497,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   setTimelineCursor(timelineCursorMs) {
     set({ timelineCursorMs })
+  },
+
+  revealInTimeline(t) {
+    set((s) => ({
+      timelineCursorMs: t,
+      timelineTarget: { t, seq: (s.timelineTarget?.seq ?? 0) + 1 },
+    }))
   },
 
   startNewDraft(name, startT, endT, startPoint) {

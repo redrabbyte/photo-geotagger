@@ -82,6 +82,10 @@ export function Filmstrip() {
 
   const onItemClick = (photo: Photo, e: React.MouseEvent) => {
     const store = useStore.getState()
+    // Move the timeline cursor (and view, if needed) to this photo's time.
+    const src = store.sources[photo.sourceId]
+    const t = src ? effectiveUtcMs(photo, src) : undefined
+    if (t !== undefined) store.revealInTimeline(t)
     if (rangeMode) {
       if (!rangeStart) {
         setRangeStart(photo.id)
