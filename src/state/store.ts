@@ -3,6 +3,7 @@ import type {
   AssignmentMethod,
   GeoPoint,
   Photo,
+  PhotoId,
   PhotoMeta,
   Source,
   SourceId,
@@ -93,6 +94,8 @@ export interface AppState {
   draftPlacement?: { which: 'start' | 'end'; startT: number; endT: number }
   /** Active clock calibration: next map click sets the source's offset. */
   calibrate?: { sourceId: SourceId; photoBaseUtcMs: number; photoName: string }
+  /** While set, the next map tap places these photos there (manual position). */
+  placement?: { ids: PhotoId[] }
 
   addSource(source: Source, photos: Photo[]): void
   removeSource(id: SourceId): void
@@ -165,6 +168,8 @@ export interface AppState {
   commitDraft(): string | undefined
   startCalibrate(sourceId: SourceId, photoBaseUtcMs: number, photoName: string): void
   cancelCalibrate(): void
+  startPlacement(ids: PhotoId[]): void
+  cancelPlacement(): void
   notify(kind: Notice['kind'], text: string): void
   dismissNotice(id: number): void
 }
@@ -705,6 +710,16 @@ export const useStore = create<AppState>((set, get) => ({
 
   cancelCalibrate() {
     set({ calibrate: undefined })
+  },
+
+  startPlacement(ids) {
+    if (ids.length === 0) return
+    // Placement and calibration both consume the next map tap — exclusive.
+    set({ placement: { ids }, calibrate: undefined })
+  },
+
+  cancelPlacement() {
+    set({ placement: undefined })
   },
 
   notify(kind, text) {

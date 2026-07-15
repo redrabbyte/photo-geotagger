@@ -159,6 +159,15 @@ export function Inspector() {
             {m.label}
           </button>
         ))}
+        <button
+          title="Then tap the spot on the map — sets a manual position for the selected photo(s), no existing marker needed"
+          onClick={() => {
+            const store = useStore.getState()
+            store.startPlacement([...store.selectedIds])
+          }}
+        >
+          Place on map…
+        </button>
       </div>
 
       <label className="checkbox-row" title="While dragging a marker on the map, snap it to the nearest GPX track">

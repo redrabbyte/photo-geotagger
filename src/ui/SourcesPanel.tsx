@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { isStale } from '../domain/matching'
-import { useStore } from '../state/store'
+import { nextTrackId, useStore } from '../state/store'
 import {
   addFilesFlow,
   addGpxFlow,
@@ -11,6 +11,7 @@ import {
   type RestorableSource,
 } from '../services/appActions'
 import { positionAtTime } from '../domain/positionAtTime'
+import { trackFromPhotos } from '../domain/trackFromPhotos'
 import { formatOffset, parseOffset } from './format'
 
 function OffsetEditor({ sourceId, value }: { sourceId: string; value: number }) {
@@ -211,6 +212,31 @@ export function SourcesPanel() {
           <button onClick={() => void addGpxFlow()}>+ GPX</button>
           <button title="Draw a track by hand: set start/end time, place points on the map" onClick={() => setShowNewTrack(true)}>
             + New track
+          </button>
+          <button
+            title="Build a track from the currently selected photos: each photo with a GPS position and time becomes a trackpoint (sorted by time); photos without are skipped"
+            onClick={() => {
+              const store = useStore.getState()
+              const selected = [...store.selectedIds].map((id) => store.photos[id]).filter(Boolean)
+              if (selected.length === 0) {
+                store.notify('info', 'Select photos first (filmstrip, map, or timeline).')
+                return
+              }
+              const result = trackFromPhotos(selected, store.sources, nextTrackId())
+              if (typeof result === 'string') {
+                store.notify('error', result)
+                return
+              }
+              store.addTracks([result.track])
+              store.flyTo(result.track.points[0], 13)
+              store.notify(
+                'success',
+                `Track "${result.track.name}" from ${result.used} photo(s)` +
+                  (result.skipped ? ` — ${result.skipped} without GPS/time skipped` : '')
+              )
+            }}
+          >
+            + From photos
           </button>
         </span>
       </div>

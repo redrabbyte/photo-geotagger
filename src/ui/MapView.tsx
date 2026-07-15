@@ -72,14 +72,15 @@ export function MapView() {
   const tracks = useStore((s) => s.tracks)
   const selectedIds = useStore((s) => s.selectedIds)
   const calibrate = useStore((s) => s.calibrate)
+  const placement = useStore((s) => s.placement)
   const draft = useStore((s) => s.draft)
   const draftSelectedIndex = useStore((s) => s.draftSelectedIndex)
   const draftAnchorIndex = useStore((s) => s.draftAnchorIndex)
   const draftPlacement = useStore((s) => s.draftPlacement)
 
   // Live values for event handlers registered once.
-  const stateRef = useRef({ photos, sources, tracks, selectedIds, calibrate, draft: draft as TrackDraft | undefined, draftPlacement })
-  stateRef.current = { photos, sources, tracks, selectedIds, calibrate, draft, draftPlacement }
+  const stateRef = useRef({ photos, sources, tracks, selectedIds, calibrate, placement, draft: draft as TrackDraft | undefined, draftPlacement })
+  stateRef.current = { photos, sources, tracks, selectedIds, calibrate, placement, draft, draftPlacement }
 
   // Positions being dragged override store positions until mouseup commits.
   const dragPositions = useRef(new Map<string, GeoPoint>()).current
@@ -207,6 +208,23 @@ export function MapView() {
           store.selectDraftPoint(typeof idx === 'number' ? idx : undefined)
           return
         }
+        const placing = stateRef.current.placement
+        if (placing) {
+          // Manual placement by tap: same snapping rules as marker dragging.
+          let pos: GeoPoint = { lat: e.lngLat.lat, lon: e.lngLat.lng }
+          let trackId: string | undefined
+          if (store.snapToTrack) {
+            const proj = projectAcrossTracks(Object.values(stateRef.current.tracks), pos)
+            if (proj) {
+              pos = proj.point
+              trackId = proj.trackId
+            }
+          }
+          for (const id of placing.ids) store.setManualPosition(id, pos, trackId)
+          store.cancelPlacement()
+          store.notify('success', `Placed ${placing.ids.length} photo(s) manually`)
+          return
+        }
         const feats = map.queryRenderedFeatures(e.point, { layers: ['photos-circle'] })
         const cal = stateRef.current.calibrate
         if (cal) {
@@ -231,7 +249,7 @@ export function MapView() {
       })
 
       map.on('click', 'photos-circle', (e) => {
-        if (stateRef.current.calibrate) return
+        if (stateRef.current.calibrate || stateRef.current.placement) return
         const id = e.features?.[0]?.properties?.id as string | undefined
         if (id) {
           const ev = e.originalEvent as MouseEvent
@@ -315,7 +333,7 @@ export function MapView() {
       }
 
       const startPhotoDrag = (e: LayerPointerEv) => {
-        if (stateRef.current.calibrate || stateRef.current.draft) return
+        if (stateRef.current.calibrate || stateRef.current.placement || stateRef.current.draft) return
         if (isMultiTouch(e)) return
         const feature = e.features?.[0]
         const id = feature?.properties?.id as string | undefined
@@ -517,6 +535,12 @@ export function MapView() {
         <div className="map-banner">
           Click the map to place the track’s {draftPlacement.which === 'start' ? 'start' : 'end'} point.
           <button onClick={() => useStore.getState().cancelDraft()}>Cancel</button>
+        </div>
+      )}
+      {placement && (
+        <div className="map-banner">
+          Tap the map where {placement.ids.length === 1 ? 'this photo' : `these ${placement.ids.length} photos`} should be placed.
+          <button onClick={() => useStore.getState().cancelPlacement()}>Cancel</button>
         </div>
       )}
     </div>
