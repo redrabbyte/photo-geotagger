@@ -88,6 +88,11 @@ body {
   color: var(--text-muted);
 }
 
+/* Collapse handle: only exists on narrow screens. */
+.bar-handle {
+  display: none;
+}
+
 /* ---- main layout ---- */
 .app-main {
   display: flex;
@@ -604,11 +609,45 @@ select {
   .write-bar {
     flex-wrap: wrap;
     gap: 8px 12px;
-    padding: 8px 10px;
+    padding: 8px 10px 0;
   }
 
   .write-mode select {
     max-width: 52vw;
+  }
+
+  /* The wrapped header eats a lot of vertical space — the grab handle at its
+     bottom collapses it to a finger-high strip (tap or swipe up/down). */
+  .bar-handle {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    flex-basis: 100%;
+    padding: 4px 0 6px;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .bar-handle::before {
+    content: '';
+    width: 48px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--border);
+  }
+
+  .write-bar.collapsed > *:not(.bar-handle):not(.modal-backdrop) {
+    display: none;
+  }
+
+  .write-bar.collapsed {
+    padding: 0 10px;
+  }
+
+  /* Collapsed, the handle IS the header — keep it comfortably tappable. */
+  .write-bar.collapsed .bar-handle {
+    padding: 12px 0;
   }
 
   .app-main {

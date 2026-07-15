@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { isDirty } from '../domain/types'
 import { useStore } from '../state/store'
 import { prepareExiftool, requestWriteStop, writeDirtyFlow, writeTimesFlow } from '../services/appActions'
@@ -63,8 +63,13 @@ export function WriteBar() {
     useStore.getState().setSettings({ writeMode: mode })
   }
 
+  // Mobile: the wrapped header eats a lot of vertical space — it can be
+  // collapsed to just a finger-high grab handle (tap or swipe on the handle).
+  const [collapsed, setCollapsed] = useState(false)
+  const touchStartY = useRef<number | null>(null)
+
   return (
-    <div className="write-bar">
+    <div className={`write-bar${collapsed ? ' collapsed' : ''}`}>
       <span className="app-title">
         Photo Geotagger
         <span className="build-time" title="Build time (UTC)">
@@ -173,6 +178,36 @@ export function WriteBar() {
           </button>
         </>
       )}
+
+      <div
+        className="bar-handle"
+        title={collapsed ? 'Expand header' : 'Collapse header'}
+        onClick={() => setCollapsed((v) => !v)}
+        onTouchStart={(e) => {
+          touchStartY.current = e.touches[0].clientY
+        }}
+        onTouchMove={(e) => {
+          if (touchStartY.current === null) return
+          const dy = e.touches[0].clientY - touchStartY.current
+          if (dy < -18) {
+            setCollapsed(true)
+            touchStartY.current = null
+          } else if (dy > 18) {
+            setCollapsed(false)
+            touchStartY.current = null
+          }
+        }}
+        onTouchEnd={() => {
+          touchStartY.current = null
+        }}
+      >
+        {collapsed && writing && (
+          <span className="muted small">
+            {Math.min(writeProgress.done + 1, writeProgress.total)}/{writeProgress.total}
+            {writeProgress.etaMs !== undefined && ` · ~${formatEtaMs(writeProgress.etaMs)}`}
+          </span>
+        )}
+      </div>
 
       {confirmStripped &&
         (() => {
