@@ -10,6 +10,7 @@ export function WriteBar() {
   const settings = useStore((s) => s.settings)
   const writeProgress = useStore((s) => s.writeProgress)
   const sources = useStore((s) => s.sources)
+  const selectedIds = useStore((s) => s.selectedIds)
   const [confirmExiftool, setConfirmExiftool] = useState(false)
   // Pending flow awaiting the stripped-files confirmation.
   const [confirmStripped, setConfirmStripped] = useState<'gps' | 'time' | null>(null)
@@ -41,13 +42,18 @@ export function WriteBar() {
   )
   const writing = writeProgress !== undefined
 
-  const flowTargets = (flow: 'gps' | 'time') => (flow === 'gps' ? dirty : timeFix)
+  // With an active selection, the time fix applies to the selected files only.
+  const timeFixSelected = selectedIds.size > 0
+  const timeFixShown = timeFixSelected ? timeFix.filter((p) => selectedIds.has(p.id)) : timeFix
+  const timeOnlyIds = timeFixSelected ? timeFixShown.map((p) => p.id) : undefined
+
+  const flowTargets = (flow: 'gps' | 'time') => (flow === 'gps' ? dirty : timeFixShown)
   // Files whose GPS Android stripped on read: writing bakes the stripped copy in.
   const strippedIn = (flow: 'gps' | 'time') => flowTargets(flow).filter((p) => p.meta?.gpsEmpty)
 
   const runFlow = (flow: 'gps' | 'time', onlyIds?: string[]) => {
     if (flow === 'gps') void writeDirtyFlow(onlyIds)
-    else void writeTimesFlow(onlyIds)
+    else void writeTimesFlow(onlyIds ?? timeOnlyIds)
   }
 
   const startWrite = (flow: 'gps' | 'time') => {
@@ -156,12 +162,17 @@ export function WriteBar() {
         </span>
       ) : (
         <>
-          {timeFix.length > 0 && (
+          {timeFixShown.length > 0 && (
             <button
-              title="Write ONLY the corrected capture time (clock offset + timezone) into every file that needs it — also files without a GPS position. GPS assignments are not written by this button."
+              title={
+                timeFixSelected
+                  ? 'Write ONLY the corrected capture time (clock offset + timezone) into the SELECTED files that need it. Clear the selection to target every file.'
+                  : 'Write ONLY the corrected capture time (clock offset + timezone) into every file that needs it — also files without a GPS position. GPS assignments are not written by this button.'
+              }
               onClick={() => startWrite('time')}
             >
-              Fix times in {timeFix.length} file{timeFix.length === 1 ? '' : 's'}
+              Fix times in {timeFixShown.length}
+              {timeFixSelected ? ' selected' : ''} file{timeFixShown.length === 1 ? '' : 's'}
             </button>
           )}
           <button
