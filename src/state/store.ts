@@ -334,10 +334,9 @@ export const useStore = create<AppState>((set, get) => ({
     const selected = [...s.selectedIds]
     const photos = { ...s.photos }
 
-    const inheritRefs =
-      method === 'inherit'
-        ? buildInheritReferences(Object.values(s.photos), sourcesMap, new Set(selected))
-        : []
+    // Geotagged photos serve as references for 'inherit' AND as the fallback
+    // for track methods on sides without any track coverage.
+    const refs = buildInheritReferences(Object.values(s.photos), sourcesMap, new Set(selected))
 
     for (const id of selected) {
       const photo = photos[id]
@@ -347,8 +346,8 @@ export const useStore = create<AppState>((set, get) => ({
 
       const result =
         method === 'inherit'
-          ? matchByInherit(photo, source, inheritRefs, s.settings.match)
-          : matchToTracks(photo, source, tracks, method)
+          ? matchByInherit(photo, source, refs, s.settings.match)
+          : matchToTracks(photo, source, tracks, method, refs)
 
       if (result.ok) {
         photos[id] = { ...photo, assignment: result.assignment, writeState: 'dirty' }

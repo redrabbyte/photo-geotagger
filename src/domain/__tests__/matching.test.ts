@@ -206,6 +206,54 @@ describe('matchToTracks', () => {
     expect(ri.assignment.degraded).toBe(true)
   })
 
+  it('falls back to geotagged photos when no track exists at all', () => {
+    const refs = [
+      { photoId: 'r1', t: T0, point: { lat: 50, lon: 8 } },
+      { photoId: 'r2', t: T0 + 10 * MIN, point: { lat: 50.01, lon: 8.01 } },
+    ]
+    const photo = makePhoto(T0 + 5 * MIN)
+    const rc = matchToTracks(photo, src, [], 'closest', refs)
+    if (!rc.ok) throw new Error('expected photo-ref match')
+    expect(rc.assignment.point.lat).toBe(50)
+    expect(rc.assignment.inheritedFrom).toBe('r1')
+    expect(rc.assignment.trackId).toBeUndefined()
+    const rb = matchToTracks(photo, src, [], 'before', refs)
+    expect(rb.ok && rb.assignment.inheritedFrom).toBe('r1')
+    const ra = matchToTracks(photo, src, [], 'after', refs)
+    expect(ra.ok && ra.assignment.inheritedFrom).toBe('r2')
+    const ri = matchToTracks(photo, src, [], 'interpolated', refs)
+    if (!ri.ok) throw new Error('expected interpolation between photo refs')
+    expect(ri.assignment.method).toBe('interpolated')
+    expect(ri.assignment.point.lat).toBeCloseTo(50.005, 9)
+    expect(ri.assignment.degraded).toBeUndefined()
+    // Without refs the old behavior remains: no match.
+    expect(matchToTracks(photo, src, [], 'closest').ok).toBe(false)
+  })
+
+  it('photo refs fill only the side no track covers; tracks win otherwise', () => {
+    // Track covers T0..T0+10min; a reference photo sits after the track end.
+    const refs = [
+      { photoId: 'rEarly', t: T0 + 3 * MIN, point: { lat: 99, lon: 99 } },
+      { photoId: 'rLate', t: T0 + 30 * MIN, point: { lat: 50.02, lon: 8.02 } },
+    ]
+    // Inside coverage: refs must NOT displace trackpoints, even when closer.
+    const inside = matchToTracks(makePhoto(T0 + 3.4 * MIN), src, [track], 'closest', refs)
+    if (!inside.ok) throw new Error('expected track match')
+    expect(inside.assignment.point.lat).toBeCloseTo(50.003, 9)
+    expect(inside.assignment.inheritedFrom).toBeUndefined()
+    // After the track end: 'after' now uses the reference photo…
+    const photo = makePhoto(T0 + 20 * MIN)
+    const ra = matchToTracks(photo, src, [track], 'after', refs)
+    if (!ra.ok) throw new Error('expected photo-ref after')
+    expect(ra.assignment.inheritedFrom).toBe('rLate')
+    expect(ra.assignment.point.lat).toBeCloseTo(50.02, 9)
+    // …and interpolation mixes the track's last point with the photo ref.
+    const ri = matchToTracks(photo, src, [track], 'interpolated', refs)
+    if (!ri.ok) throw new Error('expected mixed interpolation')
+    expect(ri.assignment.method).toBe('interpolated')
+    expect(ri.assignment.point.lat).toBeCloseTo(50.015, 9)
+  })
+
   it('clock offset shifts the match', () => {
     const offSrc = makeSource({ clockOffsetMs: -2 * MIN })
     // Photo timestamp T0+5min, camera 2min fast → true time T0+3min.
