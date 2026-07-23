@@ -59,16 +59,30 @@ export function Filmstrip() {
     window.addEventListener('mouseup', onUp)
   }
 
+  const allCount = Object.keys(photos).length
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const obs = new ResizeObserver(() => setViewWidth(el.clientWidth))
     obs.observe(el)
     setViewWidth(el.clientWidth)
-    return () => obs.disconnect()
-  }, [])
-
-  const allCount = Object.keys(photos).length
+    // The strip has no vertical axis — plain wheel scrolls it horizontally.
+    // Non-passive: the page behind must not scroll instead.
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return // native horizontal scroll
+      e.preventDefault()
+      el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      obs.disconnect()
+      el.removeEventListener('wheel', onWheel)
+    }
+    // The empty state renders without the scroll container — re-attach when
+    // the first photos arrive (the ref is null before that).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allCount === 0])
   const ordered: Photo[] = useMemo(() => {
     let list = Object.values(photos)
     if (filterMode === 'untagged') {
