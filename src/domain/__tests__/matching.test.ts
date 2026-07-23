@@ -254,6 +254,52 @@ describe('matchToTracks', () => {
     expect(ri.assignment.point.lat).toBeCloseTo(50.015, 9)
   })
 
+  it('outside track coverage the nearer reference wins per side', () => {
+    // Track ends T0+10min; a geotagged photo at T0+18min sits much closer to
+    // the target (T0+19min) than the track's end — it must win the before side.
+    const refs = [{ photoId: 'near', t: T0 + 18 * MIN, point: { lat: 50.05, lon: 8.05 } }]
+    const photo = makePhoto(T0 + 19 * MIN)
+    const rb = matchToTracks(photo, src, [track], 'before', refs)
+    if (!rb.ok) throw new Error('expected match')
+    expect(rb.assignment.inheritedFrom).toBe('near')
+    expect(rb.assignment.point.lat).toBeCloseTo(50.05, 9)
+    const rc = matchToTracks(photo, src, [track], 'closest', refs)
+    expect(rc.ok && rc.assignment.inheritedFrom).toBe('near')
+  })
+
+  it('mixes a nearer photo with the next track start between two tracks', () => {
+    const trackA = makeTrack()
+    const trackB = makeTrack({
+      id: 'trk2',
+      points: [
+        { lat: 60, lon: 20, t: T0 + 300 * MIN },
+        { lat: 60.01, lon: 20.01, t: T0 + 310 * MIN },
+      ],
+      segments: [{ startIdx: 0, endIdx: 1 }],
+      startMs: T0 + 300 * MIN,
+      endMs: T0 + 310 * MIN,
+    })
+    const refs = [{ photoId: 'mid', t: T0 + 295 * MIN, point: { lat: 59, lon: 19 } }]
+    // Target between the tracks: before side is the photo (4min away, track A
+    // end is hours away), after side is track B's start.
+    const ri = matchToTracks(makePhoto(T0 + 299 * MIN), src, [trackA, trackB], 'interpolated', refs)
+    if (!ri.ok) throw new Error('expected mixed interpolation')
+    expect(ri.assignment.method).toBe('interpolated')
+    // f = (299-295)/(300-295) = 0.8 between (59,19) and (60,20).
+    expect(ri.assignment.point.lat).toBeCloseTo(59.8, 9)
+    expect(ri.assignment.inheritedFrom).toBe('mid')
+  })
+
+  it('inside a track span reference photos never displace trackpoints', () => {
+    // Photo ref 6 seconds from the target, trackpoint 24 seconds — the track
+    // still wins because the target time lies within the track's span.
+    const refs = [{ photoId: 'tempting', t: T0 + 3.5 * MIN + 6000, point: { lat: 1, lon: 1 } }]
+    const r = matchToTracks(makePhoto(T0 + 3.5 * MIN + 12_000), src, [track], 'closest', refs)
+    if (!r.ok) throw new Error('expected match')
+    expect(r.assignment.inheritedFrom).toBeUndefined()
+    expect(r.assignment.trackId).toBe('trk1')
+  })
+
   it('clock offset shifts the match', () => {
     const offSrc = makeSource({ clockOffsetMs: -2 * MIN })
     // Photo timestamp T0+5min, camera 2min fast → true time T0+3min.

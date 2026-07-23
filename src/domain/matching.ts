@@ -77,17 +77,23 @@ export function matchToTracks(
   // nearest/previous/next trackpoint — the delta is shown in the inspector.
   const pair = findNeighbors(tracks, t)
   const refPair = photoRefNeighbors(photoRefs, t)
-  // Tracks win per side; photo references only fill a side no track covers.
-  const before: Side | undefined = pair.before
-    ? { point: pair.before.point, t: pair.before.t, deltaMs: pair.before.deltaMs, track: pair.before }
-    : refPair.before
-      ? { point: refPair.before.point, t: refPair.before.t, deltaMs: refPair.before.t - t, photoId: refPair.before.photoId }
+  // Inside a track's time span, tracks are authoritative — reference photos
+  // never displace trackpoints there. Outside every track, each side takes
+  // whichever reference is nearer in time: the track's boundary point or a
+  // geotagged photo.
+  const insideTrack = tracks.some((tr) => t >= tr.startMs && t <= tr.endMs)
+  const chooseSide = (trackRef: TrackPointRef | undefined, photoRef: TimedPosition | undefined): Side | undefined => {
+    const trackSide: Side | undefined = trackRef
+      ? { point: trackRef.point, t: trackRef.t, deltaMs: trackRef.deltaMs, track: trackRef }
       : undefined
-  const after: Side | undefined = pair.after
-    ? { point: pair.after.point, t: pair.after.t, deltaMs: pair.after.deltaMs, track: pair.after }
-    : refPair.after
-      ? { point: refPair.after.point, t: refPair.after.t, deltaMs: refPair.after.t - t, photoId: refPair.after.photoId }
+    const photoSide: Side | undefined = photoRef
+      ? { point: photoRef.point, t: photoRef.t, deltaMs: photoRef.t - t, photoId: photoRef.photoId }
       : undefined
+    if (insideTrack || !photoSide || !trackSide) return trackSide ?? photoSide
+    return Math.abs(trackSide.deltaMs) <= Math.abs(photoSide.deltaMs) ? trackSide : photoSide
+  }
+  const before = chooseSide(pair.before, refPair.before)
+  const after = chooseSide(pair.after, refPair.after)
   if (!before && !after) return { ok: false, reason: 'no-match' }
 
   const trackNeighbors = pair.before || pair.after ? { before: pair.before, after: pair.after } : undefined
@@ -131,19 +137,19 @@ export function matchToTracks(
     case 'interpolated': {
       // True track interpolation needs adjacent points of one segment (any
       // gap size); between segments or tracks it degrades to closest, flagged.
-      if (pair.before && pair.after) {
-        const canInterpolate = pair.sameSegment && pair.before.trackId === pair.after.trackId
+      if (before?.track && after?.track) {
+        const canInterpolate = pair.sameSegment && before.track.trackId === after.track.trackId
         if (!canInterpolate) return fromSide('closest', closest(), true)
-        const span = pair.after.t - pair.before.t
-        const f = span === 0 ? 0 : (t - pair.before.t) / span
+        const span = after.t - before.t
+        const f = span === 0 ? 0 : (t - before.t) / span
         const clamped = Math.min(1, Math.max(0, f))
-        const point = roundGps(lerpPoint(pair.before.point, pair.after.point, clamped))
+        const point = roundGps(lerpPoint(before.point, after.point, clamped))
         return {
           ok: true,
           assignment: {
             method,
             point,
-            trackId: pair.before.trackId,
+            trackId: before.track.trackId,
             neighbors: trackNeighbors,
             effectiveUtcMs: t,
           },
