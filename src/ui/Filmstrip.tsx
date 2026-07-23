@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Photo } from '../domain/types'
-import { effectiveUtcMs, gpsStatus, isDirty } from '../domain/types'
+import { displayPosition, effectiveUtcMs, gpsStatus, isDirty } from '../domain/types'
+import { positionAtTime } from '../domain/positionAtTime'
 import { useStore } from '../state/store'
 import { ensureThumbs } from '../services/appActions'
 import { formatUtc } from './format'
@@ -30,6 +31,33 @@ export function Filmstrip() {
   const [rangeMode, setRangeMode] = useState(false)
   const [rangeStart, setRangeStart] = useState<string | null>(null)
   const lastClickedRef = useRef<string | null>(null)
+  // Desktop drag-to-scroll state; `moved` also suppresses the trailing click.
+  const dragScroll = useRef({ moved: false })
+
+  const onStripMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    const el = scrollRef.current
+    if (!el) return
+    e.preventDefault() // no text selection while dragging
+    const startX = e.clientX
+    const startScroll = el.scrollLeft
+    dragScroll.current.moved = false
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX
+      if (Math.abs(dx) > 4) dragScroll.current.moved = true
+      if (dragScroll.current.moved) el.scrollLeft = startScroll - dx
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      // The click event fires after mouseup — reset the flag afterwards.
+      setTimeout(() => {
+        dragScroll.current.moved = false
+      }, 0)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   useEffect(() => {
     const el = scrollRef.current
@@ -92,11 +120,22 @@ export function Filmstrip() {
   }
 
   const onItemClick = (photo: Photo, e: React.MouseEvent) => {
+    // A drag-scroll gesture ends with a click on whatever item is under the
+    // cursor — swallow it.
+    if (dragScroll.current.moved) return
     const store = useStore.getState()
     // Move the timeline cursor (and view, if needed) to this photo's time.
     const src = store.sources[photo.sourceId]
     const t = src ? effectiveUtcMs(photo, src) : undefined
     if (t !== undefined) store.revealInTimeline(t)
+    // Fly the map there too — to the photo's own position, or (like a
+    // timeline click) to wherever tracks/other photos place that moment.
+    const pos =
+      displayPosition(photo) ??
+      (t !== undefined
+        ? positionAtTime(Object.values(store.tracks), Object.values(store.photos), store.sources, t)
+        : undefined)
+    if (pos) store.flyTo(pos)
     if (rangeMode) {
       if (!rangeStart) {
         setRangeStart(photo.id)
@@ -174,6 +213,7 @@ export function Filmstrip() {
       <div
         className="filmstrip"
         ref={scrollRef}
+        onMouseDown={onStripMouseDown}
       onScroll={(e) => {
         setScrollLeft(e.currentTarget.scrollLeft)
         setViewWidth(e.currentTarget.clientWidth)

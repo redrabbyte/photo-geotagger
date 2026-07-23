@@ -308,6 +308,25 @@ export function Timeline() {
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
+    // Middle mouse: pan the view. The window listeners outlive re-renders,
+    // so pan from the domain captured at drag start instead of panBy().
+    if (e.button === 1) {
+      e.preventDefault() // no browser autoscroll
+      const d0 = { ...domain }
+      const onMove = (ev: MouseEvent) => {
+        const deltaMs = (ev.clientX - rect.left - x) * msPerPx
+        setView({ min: d0.min - deltaMs, max: d0.max - deltaMs })
+      }
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+      return
+    }
+    if (e.button !== 0) return
+
     const hit = draftHit(x, y)
     if (hit === 'start' || hit === 'end') {
       const stretch = makeStretcher(hit)
@@ -446,8 +465,8 @@ export function Timeline() {
         onDoubleClick={() => setView(null)}
         title={
           hoverX !== null && domain
-            ? `${formatUtc(tOf(hoverX))} — wheel: zoom, drag: select, double-click: fit`
-            : 'Drag to select photos by time range; wheel to zoom'
+            ? `${formatUtc(tOf(hoverX))} — wheel: zoom, drag: select, middle-drag: pan, double-click: fit`
+            : 'Drag to select photos by time range; wheel to zoom; middle-drag to pan'
         }
       />
       {view && (
