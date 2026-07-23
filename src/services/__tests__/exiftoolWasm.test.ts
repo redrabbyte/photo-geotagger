@@ -105,6 +105,12 @@ describe('exiftool runner', () => {
     expect(entry.GPSLatitude as number).toBeCloseTo(GPS_A.lat, 4)
     expect(entry.GPSLongitude as number).toBeCloseTo(GPS_A.lon, 4)
     expect(entry.CreateDate).toBe('2026:07:04 20:55:27')
+
+    // Re-import path: our own scanner must find the GPS ExifTool just wrote.
+    const { readVideoMetadata } = await import('../exif/videoMeta')
+    const reimported = await readVideoMetadata(new Blob([results[0].bytes.slice()]))
+    expect(reimported.gps?.lat).toBeCloseTo(GPS_A.lat, 4)
+    expect(reimported.gps?.lon).toBeCloseTo(GPS_A.lon, 4)
   })
 
   it('writes several files in one Perl run, with per-file errors', { timeout: 180_000 }, async () => {

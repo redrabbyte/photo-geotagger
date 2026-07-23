@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readVideoCaptureDate } from '../exif/videoMeta'
+import { readVideoCaptureDate, readVideoMetadata } from '../exif/videoMeta'
 import { extractMeta } from '../exif/readMeta'
 
 function box(type: string, body: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -49,6 +49,28 @@ describe('readVideoCaptureDate', () => {
     const mdat = box('mdat', new Uint8Array(5000))
     const blob = new Blob([concat(FTYP, mdat, box('moov', mvhd(t)))])
     expect(await readVideoCaptureDate(blob)).toEqual({ wallClockMs: t, tzOffsetMin: 0 })
+  })
+
+  it('reads GPS from the ©xyz UserData atom', async () => {
+    const iso = new TextEncoder().encode('+48.8581+002.2947+035.000/')
+    const xyzBody = new Uint8Array(4 + iso.length)
+    xyzBody[0] = 0
+    xyzBody[1] = iso.length // 2-byte length, then 2-byte language code
+    xyzBody.set(iso, 4)
+    const moov = box('moov', concat(mvhd(Date.parse('2026-07-04T17:30:00Z')), box('udta', box('©xyz', xyzBody))))
+    const meta = await readVideoMetadata(new Blob([concat(FTYP, moov)]))
+    expect(meta.gps?.lat).toBeCloseTo(48.8581, 4)
+    expect(meta.gps?.lon).toBeCloseTo(2.2947, 4)
+    expect(meta.gps?.ele).toBeCloseTo(35, 1)
+    expect(meta.date?.wallClockMs).toBe(Date.parse('2026-07-04T17:30:00Z'))
+  })
+
+  it('finds a Keys-style ISO 6709 string anywhere in moov', async () => {
+    const keys = box('ilst', new TextEncoder().encode('....-33.8568+151.2153/....'))
+    const moov = box('moov', concat(mvhd(Date.parse('2026-07-04T17:30:00Z')), keys))
+    const meta = await readVideoMetadata(new Blob([concat(FTYP, moov)]))
+    expect(meta.gps?.lat).toBeCloseTo(-33.8568, 4)
+    expect(meta.gps?.lon).toBeCloseTo(151.2153, 4)
   })
 
   it('rejects unset camera clocks and garbage', async () => {
