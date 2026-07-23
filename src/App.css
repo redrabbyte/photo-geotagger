@@ -118,6 +118,12 @@ body {
   padding: 10px;
 }
 
+.match-sources {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+
 /* Desktop: drag the divider beside a panel to resize it. */
 .panel-resizer {
   flex: none;

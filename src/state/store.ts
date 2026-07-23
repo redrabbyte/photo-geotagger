@@ -65,6 +65,8 @@ export interface AppSettings {
   /** Which file types folder import picks up. */
   importFilters: ImportFilters
   match: MatchSettings
+  /** Which reference data the assign methods use (tracks, geotagged photos, or both). */
+  matchSources: { tracks: boolean; photos: boolean }
 }
 
 export interface AppState {
@@ -201,6 +203,7 @@ export const useStore = create<AppState>((set, get) => ({
     embedSidecarGps: false,
     importFilters: { jpeg: true, raw: true, xmp: true },
     match: DEFAULT_MATCH_SETTINGS,
+    matchSources: { tracks: true, photos: true },
   },
   scanning: false,
   notices: [],
@@ -329,14 +332,18 @@ export const useStore = create<AppState>((set, get) => ({
   assignSelected(method) {
     const s = get()
     const summary: AssignSummary = { assigned: 0, degraded: 0, noMatch: 0, noTime: 0 }
-    const tracks = Object.values(s.tracks)
+    // The user picks which reference data the methods work against:
+    // GPX tracks, geotagged photos, or both (photos fill uncovered sides).
+    const { tracks: useTracks, photos: usePhotos } = s.settings.matchSources
+    const tracks = useTracks ? Object.values(s.tracks) : []
     const sourcesMap = new Map(Object.entries(s.sources))
     const selected = [...s.selectedIds]
     const photos = { ...s.photos }
 
-    // Geotagged photos serve as references for 'inherit' AND as the fallback
-    // for track methods on sides without any track coverage.
-    const refs = buildInheritReferences(Object.values(s.photos), sourcesMap, new Set(selected))
+    const refs =
+      usePhotos || method === 'inherit'
+        ? buildInheritReferences(Object.values(s.photos), sourcesMap, new Set(selected))
+        : []
 
     for (const id of selected) {
       const photo = photos[id]

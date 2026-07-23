@@ -9,12 +9,11 @@ import { ensureMeta, ensureThumbs } from '../services/appActions'
 import { TrackEditorPanel } from './TrackEditorPanel'
 import { formatCoord, formatDeltaMs, formatUtc } from './format'
 
-const METHODS: { key: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated' | 'inherit'>; label: string; hint: string }[] = [
-  { key: 'interpolated', label: 'Interpolate', hint: 'Position between the trackpoints before and after the photo time' },
-  { key: 'closest', label: 'Closest point', hint: 'Nearest trackpoint in time' },
-  { key: 'before', label: 'Point before', hint: 'Last trackpoint before the photo' },
-  { key: 'after', label: 'Point after', hint: 'First trackpoint after the photo' },
-  { key: 'inherit', label: 'From other photos', hint: 'Interpolate between time-adjacent photos that already have GPS (e.g. phone photos)' },
+const METHODS: { key: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated'>; label: string; hint: string }[] = [
+  { key: 'interpolated', label: 'Interpolate', hint: 'Position between the reference points before and after the photo time' },
+  { key: 'closest', label: 'Closest point', hint: 'Nearest reference point in time' },
+  { key: 'before', label: 'Point before', hint: 'Last reference point before the photo' },
+  { key: 'after', label: 'Point after', hint: 'First reference point after the photo' },
 ]
 
 export function Inspector() {
@@ -25,6 +24,7 @@ export function Inspector() {
   const selectedIds = useStore((s) => s.selectedIds)
   const activePhotoId = useStore((s) => s.activePhotoId)
   const snapToTrack = useStore((s) => s.snapToTrack)
+  const matchSources = useStore((s) => s.settings.matchSources)
 
   const active = activePhotoId ? photos[activePhotoId] : undefined
   const activeSource = active ? sources[active.sourceId] : undefined
@@ -64,6 +64,11 @@ export function Inspector() {
     const store = useStore.getState()
     if (store.selectedIds.size === 0) {
       store.notify('info', 'Select photos first (filmstrip, map, or timeline).')
+      return
+    }
+    const ms = store.settings.matchSources
+    if (!ms.tracks && !ms.photos) {
+      store.notify('info', 'Enable at least one reference: tracks or photos.')
       return
     }
     const summary = store.assignSelected(method)
@@ -153,9 +158,39 @@ export function Inspector() {
       )}
 
       <h4>Assign position {selectedCount > 1 ? `(${selectedCount} photos)` : ''}</h4>
+      <div className="match-sources">
+        <label className="checkbox-row small" title="Use GPX trackpoints as reference positions">
+          <input
+            type="checkbox"
+            checked={matchSources.tracks}
+            onChange={(e) =>
+              useStore.getState().setSettings({ matchSources: { ...matchSources, tracks: e.target.checked } })
+            }
+          />
+          From tracks
+        </label>
+        <label
+          className="checkbox-row small"
+          title="Use photos that already have GPS (e.g. phone photos) as reference positions. With both enabled, tracks win and photos fill the gaps before/after track coverage."
+        >
+          <input
+            type="checkbox"
+            checked={matchSources.photos}
+            onChange={(e) =>
+              useStore.getState().setSettings({ matchSources: { ...matchSources, photos: e.target.checked } })
+            }
+          />
+          From photos
+        </label>
+      </div>
       <div className="method-buttons">
         {METHODS.map((m) => (
-          <button key={m.key} title={m.hint} onClick={() => runAssign(m.key)}>
+          <button
+            key={m.key}
+            title={m.hint}
+            disabled={!matchSources.tracks && !matchSources.photos}
+            onClick={() => runAssign(m.key)}
+          >
             {m.label}
           </button>
         ))}
