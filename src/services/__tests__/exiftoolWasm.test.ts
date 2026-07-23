@@ -61,6 +61,52 @@ describe('exiftool runner', () => {
     expect(second.stdout.trim()).toBe(first.stdout.trim())
   })
 
+  it('writes QuickTime GPS + dates into an MP4 and reads them back', { timeout: 180_000 }, async () => {
+    // Minimal MP4: ftyp + moov(mvhd v0) + mdat — enough structure for
+    // ExifTool to rewrite the movie header and add Keys/UserData atoms.
+    const box = (type: string, body: Uint8Array): Uint8Array => {
+      const out = new Uint8Array(8 + body.length)
+      new DataView(out.buffer).setUint32(0, out.length)
+      for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i)
+      out.set(body, 8)
+      return out
+    }
+    const mvhdBody = new Uint8Array(100)
+    new DataView(mvhdBody.buffer).setUint32(4, 2_082_844_800) // creation 1970-01-01
+    const ftyp = box('ftyp', new Uint8Array([0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0, 0x6d, 0x70, 0x34, 0x32]))
+    const mp4 = new Uint8Array([...ftyp, ...box('moov', box('mvhd', mvhdBody)), ...box('mdat', new Uint8Array(16))])
+
+    const runner = new ExiftoolRunner(nodeFetch)
+    const results = await writeBatchViaExiftool(runner, [
+      {
+        name: 'clip.mp4',
+        bytes: mp4,
+        tags: {
+          'Keys:GPSCoordinates': `${GPS_A.lat}, ${GPS_A.lon}`,
+          'UserData:GPSCoordinates': `${GPS_A.lat}, ${GPS_A.lon}`,
+          'QuickTime:CreateDate': '2026:07:04 20:55:27',
+          'QuickTime:ModifyDate': '2026:07:04 20:55:27',
+          'Keys:CreationDate': '2026:07:04 22:55:27+02:00',
+        },
+      },
+    ])
+    expect(results[0].ok, results[0].ok ? '' : results[0].error).toBe(true)
+    if (!results[0].ok) return
+
+    const verify = await parseViaExiftool(runner, 'clip.mp4', results[0].bytes, [
+      '-json',
+      '-n',
+      '-GPSLatitude',
+      '-GPSLongitude',
+      '-QuickTime:CreateDate',
+    ])
+    expect(verify.success, verify.error).toBe(true)
+    const entry = (JSON.parse(verify.output) as Array<Record<string, unknown>>)[0]
+    expect(entry.GPSLatitude as number).toBeCloseTo(GPS_A.lat, 4)
+    expect(entry.GPSLongitude as number).toBeCloseTo(GPS_A.lon, 4)
+    expect(entry.CreateDate).toBe('2026:07:04 20:55:27')
+  })
+
   it('writes several files in one Perl run, with per-file errors', { timeout: 180_000 }, async () => {
     const runner = new ExiftoolRunner(nodeFetch)
     const results = await writeBatchViaExiftool(runner, [

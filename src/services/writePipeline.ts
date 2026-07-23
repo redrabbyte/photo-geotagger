@@ -206,7 +206,12 @@ async function exiftoolWriteGps(
   video?: boolean
 ): Promise<ArrayBuffer> {
   const timeCorrection = time
-    ? { exifDateTime: formatExifDateTime(time.wallClockMs), tzOffset: formatTzOffset(time.tzOffsetMin) }
+    ? {
+        exifDateTime: formatExifDateTime(time.wallClockMs),
+        tzOffset: formatTzOffset(time.tzOffsetMin),
+        // QuickTime dates are UTC — same instant, minus the timezone.
+        utcDateTime: formatExifDateTime(time.wallClockMs - time.tzOffsetMin * 60_000),
+      }
     : undefined
   const result = await exiftoolRequest(
     { type: 'write-gps', fileName, bytes, gps, timeCorrection, video, heavy: video },
@@ -361,7 +366,7 @@ export async function writeTimeOnlyPhoto(
     if (!photo.fileHandle) throw new Error('Missing file handle')
     const file = await photo.fileHandle.getFile()
     const original = await file.arrayBuffer()
-    const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time)
+    const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')
     if (options.backupOriginals && source.dirHandle) {
       const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
       await backupOriginal(dir, photo.fileName)

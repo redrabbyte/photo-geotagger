@@ -51,10 +51,12 @@ const wasmFetch = async (...args: unknown[]): Promise<Response> => {
 const runner = new ExiftoolRunner(wasmFetch)
 
 export interface WorkerTimeCorrection {
-  /** "YYYY:MM:DD HH:MM:SS" */
+  /** Wall-clock "YYYY:MM:DD HH:MM:SS" (local time). */
   exifDateTime: string
   /** "±HH:MM" */
   tzOffset: string
+  /** Same instant as UTC "YYYY:MM:DD HH:MM:SS" — QuickTime dates are UTC. */
+  utcDateTime: string
 }
 
 export type ExiftoolRequest =
@@ -85,12 +87,24 @@ function tagsFor(
   video?: boolean
 ): Record<string, string | number> {
   const tags: Record<string, string | number> = {}
-  if (gps && video) {
-    // QuickTime containers: gallery apps read GPSCoordinates (ISO 6709),
-    // not EXIF GPSLatitude/…Ref. Write Keys + UserData for compatibility.
-    const coord = `${gps.lat}, ${gps.lon}${gps.ele !== undefined ? `, ${gps.ele}` : ''}`
-    tags['Keys:GPSCoordinates'] = coord
-    tags['UserData:GPSCoordinates'] = coord
+  if (video) {
+    if (gps) {
+      // QuickTime containers: gallery apps read GPSCoordinates (ISO 6709),
+      // not EXIF GPSLatitude/…Ref. Write Keys + UserData for compatibility.
+      const coord = `${gps.lat}, ${gps.lon}${gps.ele !== undefined ? `, ${gps.ele}` : ''}`
+      tags['Keys:GPSCoordinates'] = coord
+      tags['UserData:GPSCoordinates'] = coord
+    }
+    if (timeCorrection) {
+      // mvhd CreateDate/ModifyDate are what players and galleries read; they
+      // are UTC by spec. Keys:CreationDate additionally carries the timezone
+      // (Apple's convention). Per-track dates and Sony's rtmd/XML stay
+      // untouched — nothing reads them for display, and the XML original
+      // remains as provenance.
+      tags['QuickTime:CreateDate'] = timeCorrection.utcDateTime
+      tags['QuickTime:ModifyDate'] = timeCorrection.utcDateTime
+      tags['Keys:CreationDate'] = `${timeCorrection.exifDateTime}${timeCorrection.tzOffset}`
+    }
     return tags
   }
   if (gps) {
@@ -122,14 +136,20 @@ async function verifyOutput(
   fileName: string,
   outBytes: Uint8Array,
   gps: GeoPoint | undefined,
-  timeCorrection?: WorkerTimeCorrection
+  timeCorrection?: WorkerTimeCorrection,
+  video?: boolean
 ): Promise<void> {
   let parsed: Record<string, unknown> | undefined
-  try {
-    const buf = outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength)
-    parsed = await exifr.parse(buf, { tiff: true, exif: true, gps: true })
-  } catch {
+  if (video) {
+    // exifr cannot parse QuickTime containers — go straight to ExifTool.
     parsed = undefined
+  } else {
+    try {
+      const buf = outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength)
+      parsed = await exifr.parse(buf, { tiff: true, exif: true, gps: true })
+    } catch {
+      parsed = undefined
+    }
   }
 
   if (parsed) {
@@ -153,8 +173,9 @@ async function verifyOutput(
   }
 
   // exifr could not parse this format — fall back to a full ExifTool read.
+  const timeTag = video ? '-QuickTime:CreateDate' : '-DateTimeOriginal'
   const verify = await withWasmRecovery(() =>
-    parseViaExiftool(runner, fileName, outBytes, ['-json', '-n', '-GPSLatitude', '-GPSLongitude', '-DateTimeOriginal'])
+    parseViaExiftool(runner, fileName, outBytes, ['-json', '-n', '-GPSLatitude', '-GPSLongitude', timeTag])
   )
   if (!verify.success) throw new Error(`verification read failed: ${verify.error}`)
   const entry = (JSON.parse(verify.output) as Array<Record<string, unknown>>)[0] ?? {}
@@ -168,8 +189,14 @@ async function verifyOutput(
       throw new Error('GPS in rewritten file does not match assigned position')
     }
   }
-  if (timeCorrection && entry.DateTimeOriginal !== timeCorrection.exifDateTime) {
-    throw new Error('Corrected capture time missing from rewritten file — refusing to overwrite original')
+  if (timeCorrection) {
+    // Videos: mvhd CreateDate holds the UTC instant; photos: DateTimeOriginal
+    // holds the wall-clock time.
+    const expected = video ? timeCorrection.utcDateTime : timeCorrection.exifDateTime
+    const actual = video ? entry.CreateDate : entry.DateTimeOriginal
+    if (actual !== expected) {
+      throw new Error('Corrected capture time missing from rewritten file — refusing to overwrite original')
+    }
   }
 }
 
@@ -237,7 +264,7 @@ async function handleWriteBatch(requests: WriteRequest[]): Promise<void> {
       // Verify with an independent read before the caller may overwrite
       // anything. exifr does this in milliseconds; ExifTool remains the
       // fallback for formats exifr cannot parse.
-      await verifyOutput(req.fileName, res.bytes, req.gps, req.timeCorrection)
+      await verifyOutput(req.fileName, res.bytes, req.gps, req.timeCorrection, req.video)
       if (res.bytes.length < req.bytes.byteLength * 0.5) {
         throw new Error('Rewritten file is implausibly small — refusing to overwrite original')
       }
