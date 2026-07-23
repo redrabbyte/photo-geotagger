@@ -564,23 +564,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
     return
   }
 
-  for (const sourceId of new Set(targets.map((p) => p.sourceId))) {
-    const source = store.sources[sourceId]
-    if (!source) continue
-    if (source.dirHandle) {
-      if (!(await ensurePermission(source.dirHandle, 'readwrite'))) {
-        store.notify('error', `Write permission denied for "${source.name}" — nothing was written.`)
-        return
-      }
-    } else {
-      for (const p of targets.filter((t) => t.sourceId === sourceId)) {
-        if (p.fileHandle && !(await ensurePermission(p.fileHandle, 'readwrite'))) {
-          store.notify('error', `Write permission denied for "${p.fileName}" — nothing was written.`)
-          return
-        }
-      }
-    }
-  }
+  if (!(await ensureWritePermissions(targets))) return
 
   const timeConcurrency = writeConcurrency(store.settings)
   setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
@@ -616,6 +600,68 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
     )
 }
 
+async function permissionState(handle: FileSystemHandle): Promise<PermissionState | undefined> {
+  try {
+    return await handle.queryPermission({ mode: 'readwrite' })
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Escalate write permission for every root the targets live under (source
+ * folders, or the file handles themselves for individually-picked photos).
+ *
+ * Chrome consumes the click's user activation with the FIRST permission
+ * prompt — any further requestPermission in the same click resolves without
+ * ever asking the user. When that happens (state still 'prompt' after a
+ * failed request), the user did nothing wrong: say so and let the next click
+ * continue where this one stopped, instead of reporting a bogus "denied".
+ *
+ * Some Chrome versions also do not extend a fresh directory grant to file
+ * handles enumerated earlier — a probe on the first target file catches
+ * that and re-requests on the file handle itself.
+ */
+async function ensureWritePermissions(targets: Photo[]): Promise<boolean> {
+  const store = useStore.getState()
+  const roots: { name: string; handle: FileSystemHandle; probe?: FileSystemFileHandle }[] = []
+  const seenSources = new Set<string>()
+  for (const p of targets) {
+    const source = store.sources[p.sourceId]
+    if (source?.dirHandle) {
+      if (!seenSources.has(source.id)) {
+        seenSources.add(source.id)
+        roots.push({ name: source.name, handle: source.dirHandle, probe: p.fileHandle })
+      }
+    } else if (p.fileHandle) {
+      roots.push({ name: p.fileName, handle: p.fileHandle })
+    }
+  }
+
+  const askAgain = (name: string) =>
+    store.notify(
+      'info',
+      `"${name}" still needs write access — the browser shows at most one permission prompt per click. Click the write button again to grant it.`
+    )
+
+  for (const root of roots) {
+    if (!(await ensurePermission(root.handle, 'readwrite'))) {
+      if ((await permissionState(root.handle)) === 'prompt') askAgain(root.name)
+      else store.notify('error', `Write permission denied for "${root.name}" — nothing was written.`)
+      return false
+    }
+    // The folder is granted — verify the grant actually reaches its files.
+    if (root.probe && (await permissionState(root.probe)) === 'prompt') {
+      if (!(await ensurePermission(root.probe, 'readwrite'))) {
+        if ((await permissionState(root.probe)) === 'prompt') askAgain(root.name)
+        else store.notify('error', `Write permission denied for "${root.name}" — nothing was written.`)
+        return false
+      }
+    }
+  }
+  return true
+}
+
 /** GPS write targets: assigned photos, plus sidecar-GPS embeds when enabled. */
 export function gpsWriteTargets(): Photo[] {
   const store = useStore.getState()
@@ -637,24 +683,7 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   }
 
   // Folders are opened read-only; escalate to readwrite now (user gesture).
-  for (const sourceId of new Set(targets.map((p) => p.sourceId))) {
-    const source = store.sources[sourceId]
-    if (!source) continue
-    if (source.dirHandle) {
-      if (!(await ensurePermission(source.dirHandle, 'readwrite'))) {
-        store.notify('error', `Write permission denied for "${source.name}" — nothing was written.`)
-        return
-      }
-    } else {
-      // Individually-picked files: permission is granted per file handle.
-      for (const p of targets.filter((t) => t.sourceId === sourceId)) {
-        if (p.fileHandle && !(await ensurePermission(p.fileHandle, 'readwrite'))) {
-          store.notify('error', `Write permission denied for "${p.fileName}" — nothing was written.`)
-          return
-        }
-      }
-    }
-  }
+  if (!(await ensureWritePermissions(targets))) return
 
   const gpsConcurrency = writeConcurrency(store.settings)
   setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
