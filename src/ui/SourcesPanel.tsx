@@ -117,6 +117,7 @@ export function SourcesPanel() {
             ['jpeg', 'JPG'],
             ['raw', 'RAW'],
             ['xmp', 'XMP'],
+            ['video', 'MP4'],
           ] as const
         ).map(([key, label]) => (
           <label className="checkbox-row small" key={key}>

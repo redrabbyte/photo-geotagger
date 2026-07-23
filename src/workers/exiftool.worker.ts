@@ -66,6 +66,10 @@ export type ExiftoolRequest =
       /** Omit for time-only writes. */
       gps?: GeoPoint
       timeCorrection?: WorkerTimeCorrection
+      /** MP4/MOV: GPS goes into QuickTime metadata instead of EXIF tags. */
+      video?: boolean
+      /** Never coalesced into a batch (large files would multiply memory). */
+      heavy?: boolean
     }
   | { type: 'inspect'; requestId: number; fileName: string; bytes: ArrayBuffer }
   | { type: 'warmup'; requestId: number }
@@ -75,8 +79,20 @@ export type ExiftoolResponse =
   | { type: 'result'; requestId: number; ok: true; text: string }
   | { type: 'result'; requestId: number; ok: false; error: string }
 
-function tagsFor(gps: GeoPoint | undefined, timeCorrection?: WorkerTimeCorrection): Record<string, string | number> {
+function tagsFor(
+  gps: GeoPoint | undefined,
+  timeCorrection?: WorkerTimeCorrection,
+  video?: boolean
+): Record<string, string | number> {
   const tags: Record<string, string | number> = {}
+  if (gps && video) {
+    // QuickTime containers: gallery apps read GPSCoordinates (ISO 6709),
+    // not EXIF GPSLatitude/…Ref. Write Keys + UserData for compatibility.
+    const coord = `${gps.lat}, ${gps.lon}${gps.ele !== undefined ? `, ${gps.ele}` : ''}`
+    tags['Keys:GPSCoordinates'] = coord
+    tags['UserData:GPSCoordinates'] = coord
+    return tags
+  }
   if (gps) {
     tags.GPSVersionID = '2.3.0.0'
     tags.GPSLatitude = Math.abs(gps.lat)
@@ -207,7 +223,7 @@ async function handleWriteBatch(requests: WriteRequest[]): Promise<void> {
   const items: BatchWriteItem[] = requests.map((r) => ({
     name: r.fileName,
     bytes: new Uint8Array(r.bytes),
-    tags: tagsFor(r.gps, r.timeCorrection),
+    tags: tagsFor(r.gps, r.timeCorrection, r.video),
   }))
   const results = await withWasmRecovery(() => writeBatchViaExiftool(runner, items))
   for (let i = 0; i < requests.length; i++) {
@@ -251,9 +267,11 @@ async function pump(): Promise<void> {
           continue
         }
         // Coalesce every write request that queued up while the previous
-        // batch was running — this is what amortizes the Perl boot.
+        // batch was running — this is what amortizes the Perl boot. Heavy
+        // files (videos) always run alone: batching would multiply their
+        // memory footprint inside the WASM filesystem.
         const batch: WriteRequest[] = [first]
-        while (batch.length < MAX_BATCH && queue[0]?.type === 'write-gps') {
+        while (!first.heavy && batch.length < MAX_BATCH && queue[0]?.type === 'write-gps' && !queue[0].heavy) {
           batch.push(queue.shift() as WriteRequest)
         }
         try {

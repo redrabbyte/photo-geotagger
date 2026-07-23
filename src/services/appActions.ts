@@ -685,6 +685,17 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   // Folders are opened read-only; escalate to readwrite now (user gesture).
   if (!(await ensureWritePermissions(targets))) return
 
+  // Rewriting a video holds the whole file (plus a copy) in WASM memory.
+  // Warn for big ones — they run last and one at a time, so even a crash
+  // cannot take unwritten photos down with it.
+  const bigVideos = targets.filter((p) => p.kind === 'video' && p.sizeBytes > 200 * 1024 * 1024)
+  if (bigVideos.length > 0 && store.settings.writeMode === 'exiftool') {
+    store.notify(
+      'info',
+      `${bigVideos.length} video(s) over 200 MB — in-browser rewriting may run out of memory. Videos are written last, after all photos.`
+    )
+  }
+
   const gpsConcurrency = writeConcurrency(store.settings)
   setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
   writeStopRequested = false

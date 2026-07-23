@@ -47,6 +47,8 @@ async function downscale(source: Blob | File): Promise<Blob | undefined> {
 }
 
 async function extractThumb(file: File, kind: PhotoKind): Promise<Blob | undefined> {
+  // Videos have no EXIF preview and createImageBitmap cannot decode them.
+  if (kind === 'video') return undefined
   // Embedded EXIF preview first: cheap, and the only option for RAW/HEIC.
   try {
     const embedded = await exifr.thumbnail(file)
@@ -71,7 +73,7 @@ self.onmessage = async (event: MessageEvent<ScanRequest>) => {
     try {
       const file = await job.handle.getFile()
       if (type === 'scan') {
-        const meta = await extractMeta(file, file.lastModified)
+        const meta = await extractMeta(file, file.lastModified, job.kind)
         postMessage({
           type: 'meta',
           id: job.id,

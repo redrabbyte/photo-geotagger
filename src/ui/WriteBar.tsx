@@ -180,7 +180,7 @@ export function WriteBar() {
             disabled={dirty.length === 0}
             title={
               settings.writeMode === 'safe' && dirtyRaw > 0
-                ? `${dirtyRaw} RAW/HEIC file(s) will get .xmp sidecars`
+                ? `${dirtyRaw} RAW/HEIC/video file(s) will get .xmp sidecars`
                 : undefined
             }
             onClick={() => startWrite('gps')}

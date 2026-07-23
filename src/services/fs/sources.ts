@@ -18,9 +18,11 @@ export interface ImportFilters {
   /** RAW formats and HEIC. */
   raw: boolean
   xmp: boolean
+  /** MP4/MOV videos (GPS written via ExifTool into QuickTime metadata). */
+  video: boolean
 }
 
-export const DEFAULT_IMPORT_FILTERS: ImportFilters = { jpeg: true, raw: true, xmp: true }
+export const DEFAULT_IMPORT_FILTERS: ImportFilters = { jpeg: true, raw: true, xmp: true, video: true }
 
 export function fsaSupported(): boolean {
   return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
@@ -48,7 +50,7 @@ export async function enumerateFolder(
         const rel = `${prefix}${entry.name}`
         const kind = photoKindFromName(entry.name)
         if (kind) {
-          const wanted = kind === 'jpeg' ? filters.jpeg : filters.raw
+          const wanted = kind === 'jpeg' ? filters.jpeg : kind === 'video' ? filters.video : filters.raw
           if (wanted) result.photos.push({ handle: file, relativePath: rel, name: entry.name })
           else result.skipped++
         } else if (isGpxName(entry.name)) {

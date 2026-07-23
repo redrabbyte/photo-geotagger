@@ -9,7 +9,7 @@ export interface GeoPoint {
   ele?: number
 }
 
-export type PhotoKind = 'jpeg' | 'heic' | 'raw'
+export type PhotoKind = 'jpeg' | 'heic' | 'raw' | 'video'
 
 export interface Source {
   id: SourceId
@@ -189,6 +189,9 @@ const KIND_BY_EXT: Record<string, PhotoKind> = {
   raf: 'raw',
   orf: 'raw',
   rw2: 'raw',
+  mp4: 'video',
+  mov: 'video',
+  m4v: 'video',
 }
 
 export function photoKindFromName(name: string): PhotoKind | undefined {

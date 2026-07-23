@@ -32,17 +32,25 @@ function parseTzOffsetMin(offset: unknown): number | undefined {
  * Extract photo metadata. Accepts a File (browsers/workers — exifr reads it
  * in chunks, important for large RAW files) or an ArrayBuffer (tests/Node,
  * where exifr cannot chunk-read File objects).
+ * Videos skip exifr entirely (it cannot parse QuickTime containers, and the
+ * full-buffer retry would pull a multi-GB file into memory just to fail) —
+ * they fall through to the mtime fallback below.
  */
-export async function extractMeta(input: File | ArrayBuffer, lastModified: number): Promise<PhotoMeta> {
+export async function extractMeta(
+  input: File | ArrayBuffer,
+  lastModified: number,
+  kind?: string
+): Promise<PhotoMeta> {
+  const isVideo = kind === 'video'
   let exif: Record<string, unknown> | undefined
   try {
-    exif = await exifr.parse(input as Parameters<typeof exifr.parse>[0], EXIFR_OPTIONS)
+    exif = isVideo ? undefined : await exifr.parse(input as Parameters<typeof exifr.parse>[0], EXIFR_OPTIONS)
   } catch {
     exif = undefined
   }
   // Chunked File reading can fail on some platforms (e.g. Android SAF-backed
   // files); when nothing usable came back, retry once with the whole buffer.
-  if ((!exif || (!exif.DateTimeOriginal && exif.latitude === undefined)) && input instanceof File) {
+  if (!isVideo && (!exif || (!exif.DateTimeOriginal && exif.latitude === undefined)) && input instanceof File) {
     try {
       const full = await input.arrayBuffer()
       exif = (await exifr.parse(full, EXIFR_OPTIONS)) ?? exif

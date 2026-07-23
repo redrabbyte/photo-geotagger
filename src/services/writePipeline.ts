@@ -202,12 +202,16 @@ async function exiftoolWriteGps(
   fileName: string,
   bytes: ArrayBuffer,
   gps: GeoPoint | undefined,
-  time?: TimeCorrection
+  time?: TimeCorrection,
+  video?: boolean
 ): Promise<ArrayBuffer> {
   const timeCorrection = time
     ? { exifDateTime: formatExifDateTime(time.wallClockMs), tzOffset: formatTzOffset(time.tzOffsetMin) }
     : undefined
-  const result = await exiftoolRequest({ type: 'write-gps', fileName, bytes, gps, timeCorrection }, [bytes])
+  const result = await exiftoolRequest(
+    { type: 'write-gps', fileName, bytes, gps, timeCorrection, video, heavy: video },
+    [bytes]
+  )
   if (!('bytes' in result)) throw new Error('Unexpected worker response')
   return result.bytes
 }
@@ -304,7 +308,7 @@ async function writeViaExiftool(
   const file = await photo.fileHandle.getFile()
   const original = await file.arrayBuffer()
   // Worker verifies GPS round-trip and size sanity before returning.
-  const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time)
+  const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
 
   if (backup && source.dirHandle) {
     const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
@@ -414,7 +418,7 @@ export async function writeTimeBatch(
 
 /** ETA classes: JPEGs take the fast pure-JS path, everything else does not. */
 function etaKind(photo: Photo): string {
-  return photo.kind === 'jpeg' ? 'jpeg' : 'raw'
+  return photo.kind === 'jpeg' ? 'jpeg' : photo.kind === 'video' ? 'video' : 'raw'
 }
 
 /** Run per-photo write jobs with bounded concurrency, preserving reporting. */
@@ -425,7 +429,9 @@ async function runWriteJobs(
   onResult: (result: WriteJobResult) => void
 ): Promise<WriteJobResult[]> {
   const results: WriteJobResult[] = []
-  const queue = [...photos]
+  // Videos go LAST: rewriting them in WASM memory is the one thing that can
+  // crash the tab, so every photo is safely written before the first video.
+  const queue = [...photos].sort((a, b) => Number(a.kind === 'video') - Number(b.kind === 'video'))
   let completed = 0
   const workerCount = Math.max(1, Math.min(options.concurrency ?? 1, photos.length))
   // Per-file-class service times keep mixed JPEG/RAW batches from whipsawing
@@ -433,6 +439,9 @@ async function runWriteJobs(
   const eta = makeBatchEtaEstimator(workerCount)
   const remainingByKind: Record<string, number> = {}
   for (const p of photos) remainingByKind[etaKind(p)] = (remainingByKind[etaKind(p)] ?? 0) + 1
+  // At most one video in flight: each one holds the whole file (plus its
+  // rewritten copy) in memory, so concurrency would multiply the footprint.
+  let videoTurn: Promise<void> = Promise.resolve()
 
   const workers = Array.from({ length: workerCount }, async () => {
     for (;;) {
@@ -440,15 +449,32 @@ async function runWriteJobs(
       if (options.shouldStop?.()) return
       const photo = queue.shift()
       if (!photo) return
-      options.onProgress?.(completed, photos.length, photo.fileName, eta.estimate(remainingByKind))
-      const startedAt = Date.now()
-      let result = await job(photo)
-      if (!result.ok && result.error && isRecoverableWriteError(result.error)) {
-        // The worker rebuilt its interpreter (or the crashed pool will be
-        // recreated) — the file is untouched, so one retry is safe.
-        result = await job(photo)
+      const runJob = async (): Promise<WriteJobResult> => {
+        options.onProgress?.(completed, photos.length, photo.fileName, eta.estimate(remainingByKind))
+        const startedAt = Date.now()
+        let result = await job(photo)
+        if (!result.ok && result.error && isRecoverableWriteError(result.error)) {
+          // The worker rebuilt its interpreter (or the crashed pool will be
+          // recreated) — the file is untouched, so one retry is safe.
+          result = await job(photo)
+        }
+        eta.record(etaKind(photo), Date.now() - startedAt)
+        return result
       }
-      eta.record(etaKind(photo), Date.now() - startedAt)
+      let result: WriteJobResult
+      if (photo.kind === 'video') {
+        const previous = videoTurn
+        let release!: () => void
+        videoTurn = new Promise((resolve) => (release = resolve))
+        await previous
+        try {
+          result = await runJob()
+        } finally {
+          release()
+        }
+      } else {
+        result = await runJob()
+      }
       remainingByKind[etaKind(photo)]--
       completed++
       results.push(result)

@@ -198,7 +198,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   writeCorrectedTime: false,
   parallelExiftool: false,
   embedSidecarGps: false,
-  importFilters: { jpeg: true, raw: true, xmp: true },
+  importFilters: { jpeg: true, raw: true, xmp: true, video: true },
   match: DEFAULT_MATCH_SETTINGS,
   matchSources: { tracks: true, photos: true },
 }
