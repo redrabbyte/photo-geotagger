@@ -346,6 +346,7 @@ export async function addSourceFlow(): Promise<void> {
 }
 
 const PHOTO_EXTENSIONS = ['.jpg', '.jpeg', '.jpe', '.heic', '.heif', '.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf', '.orf', '.rw2']
+const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v']
 
 /**
  * Pick individual image files (not a folder). They form their own source;
@@ -362,7 +363,12 @@ export async function addFilesFlow(): Promise<void> {
   try {
     handles = await showOpenFilePicker({
       multiple: true,
-      types: [{ description: 'Photos', accept: { 'image/*': PHOTO_EXTENSIONS } }],
+      types: [
+        {
+          description: 'Photos & videos',
+          accept: { 'image/*': PHOTO_EXTENSIONS, 'video/*': VIDEO_EXTENSIONS },
+        },
+      ],
     })
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return
