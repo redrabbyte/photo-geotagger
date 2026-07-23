@@ -101,7 +101,8 @@ body {
 }
 
 .left {
-  width: 280px;
+  width: var(--left-w, 280px);
+  flex: none;
   overflow-y: auto;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
@@ -109,11 +110,26 @@ body {
 }
 
 .right {
-  width: 300px;
+  width: var(--right-w, 300px);
+  flex: none;
   overflow-y: auto;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   padding: 10px;
+}
+
+/* Desktop: drag the divider beside a panel to resize it. */
+.panel-resizer {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+.panel-resizer:hover,
+.panel-resizer:active {
+  background: rgba(100, 149, 237, 0.5);
 }
 
 .center {
@@ -687,6 +703,11 @@ select {
 
   /* Status toasts cover too much of a phone screen — drop them entirely. */
   .toasts {
+    display: none;
+  }
+
+  /* Panels stack full-width on mobile — nothing to resize. */
+  .panel-resizer {
     display: none;
   }
 }

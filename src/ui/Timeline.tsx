@@ -281,22 +281,22 @@ export function Timeline() {
     }
   }
 
-  /** Click: set cursor, fly the map, focus the nearest photo. */
+  /**
+   * Click: set cursor, fly the map, focus the nearest photo (filmstrip
+   * scrolls to it). The SELECTION is deliberately untouched — only a brush
+   * drag selects; a bare click must not select or deselect anything.
+   */
   const handleClick = (x: number) => {
     const state = useStore.getState()
     const t = tOf(x)
     state.setTimelineCursor(t)
     const point = positionAtTime(Object.values(state.tracks), Object.values(state.photos), state.sources, t)
     if (point) state.flyTo(point)
-    // Focus the photo nearest in time (filmstrip scrolls to it).
     let best: TimedPhoto | undefined
     for (const p of timed) {
       if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p
     }
-    if (best) {
-      state.setSelection([best.id])
-      state.setActivePhoto(best.id)
-    }
+    if (best) state.setActivePhoto(best.id)
   }
 
   const msPerPx = domain ? (domain.max - domain.min) / width : 0
