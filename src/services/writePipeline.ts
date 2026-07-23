@@ -11,7 +11,7 @@ import {
 } from './exif/writeJpeg'
 import { makeBatchEtaEstimator } from './eta'
 import { isFatalWasmError } from './exif/exiftoolRunner'
-import { backupOriginal, writeFileBytes } from './fs/safeWrite'
+import { backupOriginal, readFileBytes, writeFileBytes } from './fs/safeWrite'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
@@ -237,8 +237,7 @@ async function writeJpegInPlace(
   dirs?: DirCache
 ): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
-  const file = await photo.fileHandle.getFile()
-  const original = await file.arrayBuffer()
+  const original = await readFileBytes(photo.fileHandle)
 
   let originalDto: unknown
   try {
@@ -310,8 +309,7 @@ async function writeViaExiftool(
   dirs?: DirCache
 ): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
-  const file = await photo.fileHandle.getFile()
-  const original = await file.arrayBuffer()
+  const original = await readFileBytes(photo.fileHandle)
   // Worker verifies GPS round-trip and size sanity before returning.
   const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
 
@@ -364,8 +362,7 @@ export async function writeTimeOnlyPhoto(
 ): Promise<'exif' | 'sidecar'> {
   if (options.mode === 'exiftool' && photo.kind !== 'jpeg') {
     if (!photo.fileHandle) throw new Error('Missing file handle')
-    const file = await photo.fileHandle.getFile()
-    const original = await file.arrayBuffer()
+    const original = await readFileBytes(photo.fileHandle)
     const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')
     if (options.backupOriginals && source.dirHandle) {
       const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
@@ -376,8 +373,7 @@ export async function writeTimeOnlyPhoto(
   }
   if (photo.kind === 'jpeg') {
     if (!photo.fileHandle) throw new Error('Missing file handle')
-    const file = await photo.fileHandle.getFile()
-    const original = await file.arrayBuffer()
+    const original = await readFileBytes(photo.fileHandle)
     const rewritten = insertTimeIntoJpeg(original, time)
     await validateJpegOutput(rewritten, {
       originalSize: original.byteLength,

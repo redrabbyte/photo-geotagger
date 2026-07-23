@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { exiftoolInspect } from '../services/writePipeline'
+import { readFileBytes } from '../services/fs/safeWrite'
 import type { AssignmentMethod } from '../domain/types'
 import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
@@ -42,8 +43,8 @@ export function Inspector() {
     if (!active?.fileHandle) return
     setExifDump('loading')
     try {
-      const file = await active.fileHandle.getFile()
-      const text = await exiftoolInspect(active.fileName, await file.arrayBuffer())
+      const bytes = await readFileBytes(active.fileHandle)
+      const text = await exiftoolInspect(active.fileName, bytes)
       setExifDump({ fileName: active.fileName, text })
     } catch (err) {
       setExifDump({
