@@ -9,6 +9,7 @@ import {
   validateJpegOutput,
   type TimeCorrection,
 } from './exif/writeJpeg'
+import { makeBatchEtaEstimator } from './eta'
 import { isFatalWasmError } from './exif/exiftoolRunner'
 import { backupOriginal, writeFileBytes } from './fs/safeWrite'
 import { directoryOf } from './fs/sources'
@@ -36,7 +37,7 @@ export interface WriteOptions {
   embedSidecarGps?: boolean
   /** Checked between files: when true, no further file is started. */
   shouldStop?: () => boolean
-  onProgress?: (done: number, total: number, current: string) => void
+  onProgress?: (done: number, total: number, current: string, etaMs?: number) => void
 }
 
 /**
@@ -411,6 +412,11 @@ export async function writeTimeBatch(
   )
 }
 
+/** ETA classes: JPEGs take the fast pure-JS path, everything else does not. */
+function etaKind(photo: Photo): string {
+  return photo.kind === 'jpeg' ? 'jpeg' : 'raw'
+}
+
 /** Run per-photo write jobs with bounded concurrency, preserving reporting. */
 async function runWriteJobs(
   photos: Photo[],
@@ -421,26 +427,36 @@ async function runWriteJobs(
   const results: WriteJobResult[] = []
   const queue = [...photos]
   let completed = 0
-  const workers = Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 1, photos.length)) }, async () => {
+  const workerCount = Math.max(1, Math.min(options.concurrency ?? 1, photos.length))
+  // Per-file-class service times keep mixed JPEG/RAW batches from whipsawing
+  // the ETA; dividing by the worker count keeps parallel bursts from doing so.
+  const eta = makeBatchEtaEstimator(workerCount)
+  const remainingByKind: Record<string, number> = {}
+  for (const p of photos) remainingByKind[etaKind(p)] = (remainingByKind[etaKind(p)] ?? 0) + 1
+
+  const workers = Array.from({ length: workerCount }, async () => {
     for (;;) {
       // Stop takes effect between files: the current one always completes.
       if (options.shouldStop?.()) return
       const photo = queue.shift()
       if (!photo) return
-      options.onProgress?.(completed, photos.length, photo.fileName)
+      options.onProgress?.(completed, photos.length, photo.fileName, eta.estimate(remainingByKind))
+      const startedAt = Date.now()
       let result = await job(photo)
       if (!result.ok && result.error && isRecoverableWriteError(result.error)) {
         // The worker rebuilt its interpreter (or the crashed pool will be
         // recreated) — the file is untouched, so one retry is safe.
         result = await job(photo)
       }
+      eta.record(etaKind(photo), Date.now() - startedAt)
+      remainingByKind[etaKind(photo)]--
       completed++
       results.push(result)
       onResult(result)
     }
   })
   await Promise.all(workers)
-  options.onProgress?.(completed, photos.length, '')
+  options.onProgress?.(completed, photos.length, '', eta.estimate(remainingByKind))
   return results
 }
 

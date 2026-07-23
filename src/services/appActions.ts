@@ -11,7 +11,6 @@ import {
   rememberGpxHandles,
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
-import { makeEtaEstimator } from './eta'
 import {
   recommendedExiftoolPool,
   resetIdleExiftoolWorkers,
@@ -137,9 +136,9 @@ export function requestWriteStop(): void {
 
 /** Progress reporter with a continuously updated time estimate. */
 function makeProgressReporter() {
-  const eta = makeEtaEstimator()
-  return (done: number, total: number, current: string) => {
-    const etaMs = eta(done, total, Date.now())
+  // The pipeline computes the ETA (per-file-class service times / worker
+  // count) — this only forwards it into the store.
+  return (done: number, total: number, current: string, etaMs?: number) => {
     useStore.getState().setWriteProgress(done < total ? { done, total, current, etaMs } : undefined)
   }
 }

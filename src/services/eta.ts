@@ -1,32 +1,51 @@
 /**
- * Remaining-time estimator with recency bias.
+ * Remaining-time estimator for write batches.
  *
- * Per-file duration is tracked as an exponentially weighted moving average,
- * so the estimate is dominated by the most recent completions: a slow cold
- * start (WASM boot, first batch) or a mid-batch switch between fast JPEGs
- * and slow RAWs stops distorting the ETA after a few files — unlike the
- * global average, which drags old outliers along to the end.
+ * Instead of inter-arrival times between completions (which whipsaw when
+ * fast JPEGs and slow RAWs alternate, and when parallel workers deliver
+ * completions in bursts), the pipeline feeds it each file's measured
+ * service duration. The estimator keeps one exponentially weighted average
+ * per file class — recent files dominate, so a cold start stops distorting
+ * the estimate after a few files — and projects:
+ *
+ *   ETA = Σ remaining[kind] × rate[kind] / min(concurrency, remainingTotal)
+ *
+ * Per-file durations measured under worker-side batching inflate by the
+ * batch factor (all files of a batch finish after the whole run), and the
+ * division by concurrency cancels exactly that — the projection stays
+ * consistent for serial, parallel, and batched execution alike.
  */
-export function makeEtaEstimator(alpha = 0.3): (done: number, total: number, nowMs: number) => number | undefined {
-  let lastAt: number | undefined
-  let lastDone = 0
-  let ewmaMsPerFile: number | undefined
+export interface BatchEtaEstimator {
+  /** Feed one completed file's class and measured duration. */
+  record(kind: string, durationMs: number): void
+  /** Project the remaining wall time for the given per-class counts. */
+  estimate(remaining: Record<string, number>): number | undefined
+}
 
-  return (done, total, nowMs) => {
-    if (lastAt === undefined) lastAt = nowMs
-    if (done > lastDone) {
-      const sample = (nowMs - lastAt) / (done - lastDone)
-      if (ewmaMsPerFile === undefined) {
-        ewmaMsPerFile = sample
-      } else {
-        // One EWMA step per completed file: a batch of N completions moves
-        // the average as far as N single ones would.
-        const weight = 1 - Math.pow(1 - alpha, done - lastDone)
-        ewmaMsPerFile += weight * (sample - ewmaMsPerFile)
+export function makeBatchEtaEstimator(concurrency: number, alpha = 0.3): BatchEtaEstimator {
+  const rateByKind = new Map<string, number>()
+  /** Fallback for classes without a sample yet (e.g. RAWs before the first finishes). */
+  let globalRate: number | undefined
+
+  return {
+    record(kind, durationMs) {
+      const prev = rateByKind.get(kind)
+      rateByKind.set(kind, prev === undefined ? durationMs : prev + alpha * (durationMs - prev))
+      globalRate = globalRate === undefined ? durationMs : globalRate + alpha * (durationMs - globalRate)
+    },
+
+    estimate(remaining) {
+      let totalMs = 0
+      let count = 0
+      for (const [kind, n] of Object.entries(remaining)) {
+        if (n <= 0) continue
+        const rate = rateByKind.get(kind) ?? globalRate
+        if (rate === undefined) return undefined
+        totalMs += rate * n
+        count += n
       }
-      lastAt = nowMs
-      lastDone = done
-    }
-    return ewmaMsPerFile !== undefined ? ewmaMsPerFile * (total - done) : undefined
+      if (count === 0) return 0
+      return totalMs / Math.max(1, Math.min(concurrency, count))
+    },
   }
 }
