@@ -190,21 +190,44 @@ export type ScanUpdate =
 
 let noticeCounter = 1
 
+const SETTINGS_KEY = 'photo-geotagger.settings.v1'
+
+const DEFAULT_SETTINGS: AppSettings = {
+  writeMode: 'safe',
+  backupOriginals: false,
+  writeCorrectedTime: false,
+  parallelExiftool: false,
+  embedSidecarGps: false,
+  importFilters: { jpeg: true, raw: true, xmp: true },
+  match: DEFAULT_MATCH_SETTINGS,
+  matchSources: { tracks: true, photos: true },
+}
+
+/** Settings survive sessions; unknown/missing fields fall back to defaults. */
+function initialSettings(): AppSettings {
+  let stored: Partial<AppSettings> = {}
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === 'object') stored = parsed as Partial<AppSettings>
+  } catch {
+    // corrupt/unavailable storage — use defaults
+  }
+  return {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    importFilters: { ...DEFAULT_SETTINGS.importFilters, ...stored.importFilters },
+    match: { ...DEFAULT_SETTINGS.match, ...stored.match },
+    matchSources: { ...DEFAULT_SETTINGS.matchSources, ...stored.matchSources },
+  }
+}
+
 export const useStore = create<AppState>((set, get) => ({
   sources: {},
   photos: {},
   tracks: {},
   selectedIds: new Set<string>(),
-  settings: {
-    writeMode: 'safe',
-    backupOriginals: true,
-    writeCorrectedTime: false,
-    parallelExiftool: false,
-    embedSidecarGps: false,
-    importFilters: { jpeg: true, raw: true, xmp: true },
-    match: DEFAULT_MATCH_SETTINGS,
-    matchSources: { tracks: true, photos: true },
-  },
+  settings: initialSettings(),
   scanning: false,
   notices: [],
   snapToTrack: false,
@@ -490,7 +513,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setSettings(patch) {
-    set((s) => ({ settings: { ...s.settings, ...patch } }))
+    set((s) => {
+      const settings = { ...s.settings, ...patch }
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+      } catch {
+        // storage unavailable — settings stay session-only
+      }
+      return { settings }
+    })
   },
 
   setSnapToTrack(snapToTrack) {
