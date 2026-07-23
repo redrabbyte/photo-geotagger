@@ -1,5 +1,6 @@
 import exifr from 'exifr'
 import type { PhotoMeta } from '../../domain/types'
+import { readVideoCaptureDate } from './videoMeta'
 
 // No `pick` filtering: it silently drops tags needed for derived values
 // (e.g. GPS*Ref, without which exifr loses the coordinate's hemisphere).
@@ -42,6 +43,15 @@ export async function extractMeta(
   kind?: string
 ): Promise<PhotoMeta> {
   const isVideo = kind === 'video'
+  if (isVideo) {
+    // Sony XML metadata (CreationDateValue, with timezone) or QuickTime
+    // mvhd creation_time — both read from tiny byte ranges, both beat mtime.
+    const blob = input instanceof ArrayBuffer ? new Blob([input]) : input
+    const videoDate = await readVideoCaptureDate(blob)
+    if (videoDate) {
+      return { captureLocalMs: videoDate.wallClockMs, timeSource: 'exif', tzOffsetMin: videoDate.tzOffsetMin }
+    }
+  }
   let exif: Record<string, unknown> | undefined
   try {
     exif = isVideo ? undefined : await exifr.parse(input as Parameters<typeof exifr.parse>[0], EXIFR_OPTIONS)
