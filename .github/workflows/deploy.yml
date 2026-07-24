@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main, claude/photo-metadata-editor-cxin96]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
