@@ -2,11 +2,14 @@
 import exifr from 'exifr'
 import type { PhotoKind, PhotoMeta } from '../domain/types'
 import { extractMeta } from '../services/exif/readMeta'
+import { needsManualOrientation, normalizeOrientation, orientedBlob } from '../services/exif/orient'
 
 export interface ScanJob {
   id: string
   handle: FileSystemFileHandle
   kind: PhotoKind
+  /** EXIF orientation when already known (thumb jobs); read on demand otherwise. */
+  orientation?: number
 }
 
 /** 'scan' extracts metadata only; 'thumb' generates thumbnails on demand. */
@@ -46,7 +49,16 @@ async function downscale(source: Blob | File): Promise<Blob | undefined> {
   }
 }
 
-async function extractThumb(file: File, kind: PhotoKind): Promise<Blob | undefined> {
+async function readOrientation(file: File): Promise<number | undefined> {
+  try {
+    const parsed = await exifr.parse(file, { pick: ['Orientation'], translateValues: false })
+    return normalizeOrientation(parsed?.Orientation)
+  } catch {
+    return undefined
+  }
+}
+
+async function extractThumb(file: File, kind: PhotoKind, orientation?: number): Promise<Blob | undefined> {
   // Videos have no EXIF preview and createImageBitmap cannot decode them.
   if (kind === 'video') return undefined
   // Embedded EXIF preview first: cheap, and the only option for RAW/HEIC.
@@ -54,6 +66,19 @@ async function extractThumb(file: File, kind: PhotoKind): Promise<Blob | undefin
     const embedded = await exifr.thumbnail(file)
     if (embedded) {
       const blob = new Blob([embedded as BlobPart], { type: 'image/jpeg' })
+      // The RAW's orientation tag rarely makes it into the embedded preview —
+      // apply it by hand or portrait shots render sideways.
+      const o = orientation ?? (await readOrientation(file)) ?? 1
+      if (o !== 1) {
+        const bitmap = await createImageBitmap(blob)
+        try {
+          const manual = needsManualOrientation(o, bitmap.width, bitmap.height)
+          const oriented = await orientedBlob(bitmap, manual ? o : 1, THUMB_SIZE)
+          if (oriented) return oriented
+        } finally {
+          bitmap.close()
+        }
+      }
       // Small previews go out untouched — re-encoding costs ~20x more than
       // handing the browser the original JPEG bytes.
       if (blob.size <= DIRECT_THUMB_MAX_BYTES) return blob
@@ -62,7 +87,8 @@ async function extractThumb(file: File, kind: PhotoKind): Promise<Blob | undefin
   } catch {
     // fall through
   }
-  // JPEGs decode natively; downsample from the full image.
+  // JPEGs decode natively; downsample from the full image ('from-image'
+  // handles the orientation — the file carries its own EXIF).
   if (kind === 'jpeg') return downscale(file)
   return undefined
 }
@@ -82,7 +108,7 @@ self.onmessage = async (event: MessageEvent<ScanRequest>) => {
           lastModified: file.lastModified,
         } satisfies ScanResponse)
       } else {
-        const thumb = await extractThumb(file, job.kind)
+        const thumb = await extractThumb(file, job.kind, job.orientation)
         if (thumb) {
           postMessage({ type: 'thumb', id: job.id, blob: thumb } satisfies ScanResponse)
         } else {

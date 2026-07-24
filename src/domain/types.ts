@@ -48,6 +48,8 @@ export interface PhotoMeta {
   cameraModel?: string
   width?: number
   height?: number
+  /** EXIF Orientation (1–8); displays rotate/mirror accordingly. */
+  orientation?: number
 }
 
 export type AssignmentMethod =

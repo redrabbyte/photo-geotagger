@@ -10,6 +10,9 @@ import { useStore } from '../state/store'
 import { ensureMeta, ensureThumbs } from '../services/appActions'
 import { TrackEditorPanel } from './TrackEditorPanel'
 import { formatCoord, formatDeltaMs, formatUtc } from './format'
+import exifr from 'exifr'
+import { orientBlob } from '../services/exif/orient'
+import { captureVideoFrame } from '../services/videoThumb'
 
 const METHODS: { key: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated'>; label: string; hint: string }[] = [
   { key: 'interpolated', label: 'Interpolate', hint: 'Position between the reference points before and after the photo time' },
@@ -37,6 +40,45 @@ export function Inspector() {
     if (activePhotoId) {
       ensureMeta(activePhotoId)
       ensureThumbs([activePhotoId], true)
+    }
+  }, [activePhotoId])
+
+  // High-quality preview for the detail panel: JPEGs show the original file
+  // (the browser downscales and honors EXIF orientation itself), RAW/HEIC
+  // show the embedded preview at full size (orientation applied by hand),
+  // videos a 1280px frame. Falls back to the 320px thumb while loading.
+  const [preview, setPreview] = useState<string | undefined>()
+  useEffect(() => {
+    setPreview(undefined)
+    const photo = activePhotoId ? useStore.getState().photos[activePhotoId] : undefined
+    if (!photo?.fileHandle) return
+    let cancelled = false
+    let url: string | undefined
+    void (async () => {
+      try {
+        if (photo.kind === 'jpeg') {
+          url = URL.createObjectURL(await photo.fileHandle!.getFile())
+        } else if (photo.kind === 'video') {
+          const frame = await captureVideoFrame(await photo.fileHandle!.getFile(), 1280)
+          if (frame) url = URL.createObjectURL(frame)
+        } else {
+          const file = await photo.fileHandle!.getFile()
+          const embedded = (await exifr.thumbnail(file)) as Uint8Array | undefined
+          if (embedded) {
+            const blob = new Blob([embedded as unknown as BlobPart], { type: 'image/jpeg' })
+            const oriented = await orientBlob(blob, photo.meta?.orientation)
+            url = URL.createObjectURL(oriented ?? blob)
+          }
+        }
+      } catch {
+        // keep the small thumb
+      }
+      if (!cancelled && url) setPreview(url)
+      else if (url) URL.revokeObjectURL(url)
+    })()
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
     }
   }, [activePhotoId])
 
@@ -115,7 +157,9 @@ export function Inspector() {
 
       {active && selectedCount === 1 && (
         <div className="inspector-details">
-          {active.thumbUrl && <img className="inspector-thumb" src={active.thumbUrl} alt="" />}
+          {(preview ?? active.thumbUrl) && (
+            <img className="inspector-thumb" src={preview ?? active.thumbUrl} alt="" />
+          )}
           <table>
             <tbody>
               <tr><td>Source</td><td>{activeSource?.name ?? '?'}</td></tr>

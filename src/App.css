@@ -321,7 +321,9 @@ h4 {
 }
 
 .inspector-thumb {
-  max-width: 100%;
+  /* Scales with the (resizable) panel width. */
+  width: 100%;
+  height: auto;
   border-radius: 6px;
   margin-bottom: 6px;
 }

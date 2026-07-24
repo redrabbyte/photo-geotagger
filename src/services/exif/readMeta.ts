@@ -1,5 +1,6 @@
 import exifr from 'exifr'
 import type { PhotoMeta } from '../../domain/types'
+import { normalizeOrientation } from './orient'
 import { readVideoMetadata } from './videoMeta'
 
 // No `pick` filtering: it silently drops tags needed for derived values
@@ -96,6 +97,7 @@ export async function extractMeta(
   } else if (exif && Object.keys(exif).some((k) => k.startsWith('GPS'))) {
     meta.gpsEmpty = true
   }
+  meta.orientation = normalizeOrientation(exif?.Orientation)
   if (typeof exif?.Model === 'string') meta.cameraModel = exif.Model
   if (typeof exif?.ExifImageWidth === 'number') meta.width = exif.ExifImageWidth
   if (typeof exif?.ExifImageHeight === 'number') meta.height = exif.ExifImageHeight

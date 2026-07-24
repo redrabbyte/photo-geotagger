@@ -9,9 +9,10 @@ export interface ScanCallbacks {
   onIdle(): void
 }
 
-const BATCH_SIZE = 24
-// Small batches keep the wait short before a priority thumb can jump in
-// (a worker must finish its current batch first).
+// Small batches keep the wait short before a priority job can jump in
+// (a worker must finish its current batch first) — with 24 the thumbnail of
+// a clicked photo could sit behind two dozen RAW meta reads.
+const BATCH_SIZE = 8
 const THUMB_BATCH_SIZE = 4
 
 /**

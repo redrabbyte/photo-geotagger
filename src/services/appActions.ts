@@ -176,7 +176,7 @@ export function ensureThumbs(ids: string[], priority = false): void {
       videoThumbQueue.push(p.id)
       void pumpVideoThumbs()
     } else {
-      jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind })
+      jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind, orientation: p.meta?.orientation })
     }
   }
   if (jobs.length > 0) getScanClient().enqueueThumbs(jobs, priority)

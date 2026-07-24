@@ -116,10 +116,15 @@ export function Filmstrip() {
   const count = Math.ceil(viewWidth / ITEM_W) + 8
   const visible = ordered.slice(first, first + count)
 
-  // Thumbnails are generated lazily for what is (nearly) visible.
+  // Thumbnails are generated lazily for what is (nearly) visible. Debounced:
+  // during a scan the time-sorted order reshuffles with every metadata flush,
+  // and the "visible window" would sweep across the whole set, requesting
+  // thumbs for photos the user never looked at.
   useEffect(() => {
     const ids = visible.filter((p) => !p.thumbUrl).map((p) => p.id)
-    if (ids.length > 0) ensureThumbs(ids)
+    if (ids.length === 0) return
+    const timer = setTimeout(() => ensureThumbs(ids), 400)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [first, count, ordered])
 

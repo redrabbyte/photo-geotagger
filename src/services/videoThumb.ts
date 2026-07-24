@@ -7,7 +7,6 @@
  * Returns undefined when the codec cannot be decoded (e.g. HEVC without
  * hardware support) or decoding stalls.
  */
-const THUMB_WIDTH = 320
 const STEP_TIMEOUT_MS = 10_000
 
 function nextEvent(video: HTMLVideoElement, event: string): Promise<void> {
@@ -34,7 +33,7 @@ function nextEvent(video: HTMLVideoElement, event: string): Promise<void> {
   })
 }
 
-export async function captureVideoFrame(file: File): Promise<Blob | undefined> {
+export async function captureVideoFrame(file: File, targetWidth = 320): Promise<Blob | undefined> {
   const url = URL.createObjectURL(file)
   const video = document.createElement('video')
   video.muted = true
@@ -47,8 +46,9 @@ export async function captureVideoFrame(file: File): Promise<Blob | undefined> {
     video.currentTime = Math.min(1, (video.duration || 2) / 2)
     await nextEvent(video, 'seeked')
 
-    const scale = THUMB_WIDTH / video.videoWidth
-    const canvas = new OffscreenCanvas(THUMB_WIDTH, Math.max(1, Math.round(video.videoHeight * scale)))
+    const width = Math.min(targetWidth, video.videoWidth)
+    const scale = width / video.videoWidth
+    const canvas = new OffscreenCanvas(width, Math.max(1, Math.round(video.videoHeight * scale)))
     const ctx = canvas.getContext('2d')
     if (!ctx) return undefined
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
