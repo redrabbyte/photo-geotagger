@@ -86,6 +86,13 @@ copy.
 - Writing exotic RAW variants in the browser is less battle-tested than
   desktop ExifTool — keep backups on (every output is verified anyway).
 
+## Licenses
+
+Built on open-source software — see
+[THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md) for the frameworks,
+the embedded ExifTool/Perl WASM stack, and the OpenStreetMap map/search
+services with their licenses.
+
 ## Development
 
 ```bash
