@@ -20,6 +20,29 @@ describe('degToDmsRationals round-trip', () => {
   }
 })
 
+describe('rounding never emits 60 seconds/minutes', () => {
+  // Values whose fractional part rounds up to exactly a whole minute/degree.
+  const nasty = [50 + 59.99999999 / 60, 9 + 59 / 60 + 59.9999999 / 3600, 179.9999999999]
+
+  it('DMS rationals carry the overflow', () => {
+    for (const deg of nasty) {
+      const [d, m, s] = degToDmsRationals(deg)
+      expect(s.num / s.den).toBeLessThan(60)
+      expect(m.num).toBeLessThan(60)
+      const back = dmsRationalsToDeg([d, m, s], 'N')
+      expect(Math.abs(back - deg)).toBeLessThan(1e-6)
+    }
+  })
+
+  it('XMP coordinate carries the overflow', () => {
+    for (const deg of nasty) {
+      const s = degToXmpCoordinate(deg, false)
+      expect(s).not.toContain(',60.000000')
+      expect(Math.abs(xmpCoordinateToDeg(s)! - deg)).toBeLessThan(1e-6)
+    }
+  })
+})
+
 describe('XMP coordinate strings', () => {
   it('formats and parses back', () => {
     for (const [deg, isLat] of [

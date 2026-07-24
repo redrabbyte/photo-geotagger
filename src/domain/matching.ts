@@ -8,8 +8,8 @@ import type {
   TrackPointRef,
 } from './types'
 import { effectiveUtcMs, displayPosition } from './types'
-import { findNeighbors } from './trackIndex'
-import { lerpPoint, roundGps } from './gpsMath'
+import { findNeighbors, lowerBoundByT } from './trackIndex'
+import { interpolateAtTime, roundGps } from './gpsMath'
 
 export interface MatchSettings {
   /** Max time distance for inheriting from an adjacent geotagged photo. */
@@ -42,18 +42,7 @@ interface Side {
 
 /** Nearest reference photos before/after t (refs sorted by t ascending). */
 function photoRefNeighbors(refs: TimedPosition[], t: number): { before?: TimedPosition; after?: TimedPosition } {
-  let lo = 0
-  let hi = refs.length - 1
-  let idx = -1
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    if (refs[mid].t <= t) {
-      idx = mid
-      lo = mid + 1
-    } else {
-      hi = mid - 1
-    }
-  }
+  const idx = lowerBoundByT(refs, t)
   return { before: idx >= 0 ? refs[idx] : undefined, after: refs[idx + 1] }
 }
 
@@ -140,10 +129,7 @@ export function matchToTracks(
       if (before?.track && after?.track) {
         const canInterpolate = pair.sameSegment && before.track.trackId === after.track.trackId
         if (!canInterpolate) return fromSide('closest', closest(), true)
-        const span = after.t - before.t
-        const f = span === 0 ? 0 : (t - before.t) / span
-        const clamped = Math.min(1, Math.max(0, f))
-        const point = roundGps(lerpPoint(before.point, after.point, clamped))
+        const point = interpolateAtTime(before, after, t)
         return {
           ok: true,
           assignment: {
@@ -158,10 +144,7 @@ export function matchToTracks(
       // A side without track coverage: interpolate against reference photos
       // (possibly mixing a trackpoint on one side with a photo on the other).
       if (before && after) {
-        const span = after.t - before.t
-        const f = span === 0 ? 0 : (t - before.t) / span
-        const clamped = Math.min(1, Math.max(0, f))
-        const point = roundGps(lerpPoint(before.point, after.point, clamped))
+        const point = interpolateAtTime(before, after, t)
         const nearest = Math.abs(before.deltaMs) <= Math.abs(after.deltaMs) ? before : after
         return {
           ok: true,
@@ -219,28 +202,14 @@ export function matchByInherit(
   if (t === undefined) return { ok: false, reason: 'no-time' }
   if (refs.length === 0) return { ok: false, reason: 'no-match' }
 
-  // Binary search: last ref with t <= photo time.
-  let lo = 0
-  let hi = refs.length - 1
-  let idx = -1
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    if (refs[mid].t <= t) {
-      idx = mid
-      lo = mid + 1
-    } else {
-      hi = mid - 1
-    }
-  }
+  const idx = lowerBoundByT(refs, t)
   const before = idx >= 0 ? refs[idx] : undefined
   const after = idx + 1 < refs.length ? refs[idx + 1] : undefined
   const beforeOk = before !== undefined && t - before.t <= settings.maxInheritGapMs
   const afterOk = after !== undefined && after.t - t <= settings.maxInheritGapMs
 
   if (beforeOk && afterOk) {
-    const span = after.t - before.t
-    const f = span === 0 ? 0 : (t - before.t) / span
-    const point = roundGps(lerpPoint(before.point, after.point, f))
+    const point = interpolateAtTime(before, after, t)
     const nearest = t - before.t <= after.t - t ? before : after
     return {
       ok: true,

@@ -56,6 +56,17 @@ describe('XMP sidecar', () => {
     expect(() => mergeGpsIntoXmp('this is not xml <', GPS)).toThrow()
   })
 
+  it('removes a stale altitude when the new position has none', () => {
+    // Old sidecar: position WITH altitude. New assignment: no elevation
+    // (manual placement / track without <ele>) — the old altitude must go.
+    const existing = generateXmpSidecar({ lat: 10, lon: 20, ele: 500 })
+    const merged = mergeGpsIntoXmp(existing, { lat: 51.5, lon: -0.12 })
+    const back = readGpsFromXmp(merged)
+    expect(back!.lat).toBeCloseTo(51.5, 5)
+    expect(back!.ele).toBeUndefined()
+    expect(merged).not.toContain('GPSAltitude')
+  })
+
   it('sidecar naming', () => {
     expect(sidecarNameFor('DSC01234.ARW')).toBe('DSC01234.xmp')
     expect(sidecarNameFor('IMG_0001.heic')).toBe('IMG_0001.xmp')
@@ -152,6 +163,16 @@ describe('parseGpx', () => {
   it('rejects tracks with no timestamps', () => {
     const noTime = GPX_OK.replace(/<time>[^<]*<\/time>/g, '')
     expect(() => parseGpx(noTime, 'walk.gpx', (n) => `t${n}`)).toThrow(GpxParseError)
+  })
+
+  it('skips an empty <trk> instead of discarding the whole file', () => {
+    const withEmpty = GPX_OK.replace(
+      '</gpx>',
+      '<trk><name>placeholder</name><trkseg></trkseg></trk></gpx>'
+    )
+    const tracks = parseGpx(withEmpty, 'walk.gpx', (n) => `t${n}`)
+    expect(tracks).toHaveLength(1)
+    expect(tracks[0].name).toBe('Morning walk')
   })
 
   it('rejects non-XML and GPX without tracks', () => {

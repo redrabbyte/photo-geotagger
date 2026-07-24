@@ -8,12 +8,21 @@ export interface Rational {
 /** Convert decimal degrees to EXIF DMS rationals (degrees, minutes, seconds). */
 export function degToDmsRationals(deg: number): [Rational, Rational, Rational] {
   const abs = Math.abs(deg)
-  const d = Math.floor(abs)
+  let d = Math.floor(abs)
   const minFloat = (abs - d) * 60
-  const m = Math.floor(minFloat)
+  let m = Math.floor(minFloat)
   const secFloat = (minFloat - m) * 60
   // 10000 denominator gives ~1cm precision at the equator.
-  const s = Math.round(secFloat * 10000)
+  let s = Math.round(secFloat * 10000)
+  // Rounding can land exactly on 60" — carry instead of emitting invalid DMS.
+  if (s >= 60 * 10000) {
+    s -= 60 * 10000
+    m += 1
+  }
+  if (m >= 60) {
+    m -= 60
+    d += 1
+  }
   return [
     { num: d, den: 1 },
     { num: m, den: 1 },
@@ -31,8 +40,14 @@ export function dmsRationalsToDeg(dms: [Rational, Rational, Rational], ref: stri
 export function degToXmpCoordinate(deg: number, isLat: boolean): string {
   const ref = isLat ? (deg >= 0 ? 'N' : 'S') : deg >= 0 ? 'E' : 'W'
   const abs = Math.abs(deg)
-  const d = Math.floor(abs)
-  const min = (abs - d) * 60
+  let d = Math.floor(abs)
+  // Round to the printed precision FIRST, so "59.9999999" cannot format as
+  // an invalid "60.000000" — carry into the degrees instead.
+  let min = Math.round((abs - d) * 60 * 1e6) / 1e6
+  if (min >= 60) {
+    min -= 60
+    d += 1
+  }
   return `${d},${min.toFixed(6)}${ref}`
 }
 
@@ -81,4 +96,19 @@ export function lerpPoint(a: GeoPoint, b: GeoPoint, f: number): GeoPoint {
 export function roundGps(p: GeoPoint): GeoPoint {
   const r = (v: number) => Math.round(v * 1e7) / 1e7
   return { lat: r(p.lat), lon: r(p.lon), ele: p.ele !== undefined ? Math.round(p.ele * 100) / 100 : undefined }
+}
+
+/**
+ * Position at time t between two timed references: linear interpolation with
+ * the fraction clamped to [0, 1] (t outside the pair snaps to the nearer end),
+ * rounded to storage precision.
+ */
+export function interpolateAtTime(
+  before: { point: GeoPoint; t: number },
+  after: { point: GeoPoint; t: number },
+  t: number
+): GeoPoint {
+  const span = after.t - before.t
+  const f = span === 0 ? 0 : (t - before.t) / span
+  return roundGps(lerpPoint(before.point, after.point, Math.min(1, Math.max(0, f))))
 }

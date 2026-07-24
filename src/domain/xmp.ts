@@ -117,25 +117,37 @@ export function mergeGpsIntoXmp(
     desc.setAttribute('xmlns:exif', 'http://ns.adobe.com/exif/1.0/')
   }
 
-  const gpsProps: Record<string, string | undefined> = {
-    GPSVersionID: gps ? '2.3.0.0' : undefined,
-    GPSLatitude: gps ? degToXmpCoordinate(gps.lat, true) : undefined,
-    GPSLongitude: gps ? degToXmpCoordinate(gps.lon, false) : undefined,
-    GPSAltitude: gps?.ele !== undefined ? `${Math.round(Math.abs(gps.ele) * 100)}/100` : undefined,
-    GPSAltitudeRef: gps?.ele !== undefined ? (gps.ele < 0 ? '1' : '0') : undefined,
-    DateTimeOriginal: time ? xmpDateTime(time.wallClockMs, time.tzOffsetMin) : undefined,
+  // Removal is separate from setting: writing a position WITHOUT elevation
+  // must also delete any existing altitude, or the sidecar keeps the old
+  // location's altitude attached to the new coordinates.
+  const removals: string[] = []
+  const sets: Record<string, string> = {}
+  if (gps) {
+    removals.push('GPSVersionID', 'GPSLatitude', 'GPSLongitude', 'GPSAltitude', 'GPSAltitudeRef')
+    sets.GPSVersionID = '2.3.0.0'
+    sets.GPSLatitude = degToXmpCoordinate(gps.lat, true)
+    sets.GPSLongitude = degToXmpCoordinate(gps.lon, false)
+    if (gps.ele !== undefined) {
+      sets.GPSAltitude = `${Math.round(Math.abs(gps.ele) * 100)}/100`
+      sets.GPSAltitudeRef = gps.ele < 0 ? '1' : '0'
+    }
+  }
+  if (time) {
+    removals.push('DateTimeOriginal')
+    sets.DateTimeOriginal = xmpDateTime(time.wallClockMs, time.tzOffsetMin)
   }
 
-  for (const [local, value] of Object.entries(gpsProps)) {
-    if (value === undefined) continue
+  for (const local of removals) {
     // Remove element-form duplicates anywhere under this description.
     for (const el of elementsByLocalName(desc, local)) el.remove()
-    // Replace any attribute-form value regardless of its prefix.
+    // Remove any attribute-form value regardless of its prefix.
     for (const attr of Array.from(desc.attributes)) {
       if (!attr.name.startsWith('xmlns') && attrLocalName(attr.name) === local) {
         desc.removeAttribute(attr.name)
       }
     }
+  }
+  for (const [local, value] of Object.entries(sets)) {
     desc.setAttribute(`exif:${local}`, value)
   }
 

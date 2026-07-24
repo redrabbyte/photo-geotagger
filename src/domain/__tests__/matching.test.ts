@@ -358,6 +358,24 @@ describe('inherit', () => {
     const refs = buildInheritReferences([phone, cam], sources, new Set(['cam1']))
     expect(matchByInherit(cam, src, refs, DEFAULT_MATCH_SETTINGS).ok).toBe(false)
   })
+
+  it('fails when refs on BOTH sides exceed the gap', () => {
+    const before = makePhoto(T0, { id: 'b', meta: { captureLocalMs: T0, originalGps: { lat: 50, lon: 8 } } })
+    const after = makePhoto(T0 + 30 * MIN, { id: 'a', meta: { captureLocalMs: T0 + 30 * MIN, originalGps: { lat: 51, lon: 9 } } })
+    const cam = makePhoto(T0 + 15 * MIN, { id: 'cam1' })
+    const refs = buildInheritReferences([before, after, cam], sources, new Set(['cam1']))
+    const r = matchByInherit(cam, src, refs, DEFAULT_MATCH_SETTINGS)
+    expect(!r.ok && r.reason).toBe('no-match')
+  })
+
+  it('accepts a ref exactly at the gap boundary', () => {
+    const gap = DEFAULT_MATCH_SETTINGS.maxInheritGapMs
+    const phone = makePhoto(T0, { id: 'ph1', meta: { captureLocalMs: T0, originalGps: { lat: 50, lon: 8 } } })
+    const cam = makePhoto(T0 + gap, { id: 'cam1' })
+    const refs = buildInheritReferences([phone, cam], sources, new Set(['cam1']))
+    const r = matchByInherit(cam, src, refs, DEFAULT_MATCH_SETTINGS)
+    expect(r.ok && r.assignment.inheritedFrom).toBe('ph1')
+  })
 })
 
 describe('staleness and status', () => {

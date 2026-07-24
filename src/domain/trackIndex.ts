@@ -7,12 +7,18 @@ export interface NeighborPair {
   sameSegment: boolean
 }
 
-/** Index of the last point with t <= tMs within [lo, hi], or lo-1 if none. */
-function lowerBound(track: Track, tMs: number, lo: number, hi: number): number {
+/** Index of the last item with t <= tMs within [lo, hi] (whole array by
+ * default), or lo-1 if none. Items must be sorted by t ascending. */
+export function lowerBoundByT(
+  items: readonly { t: number }[],
+  tMs: number,
+  lo = 0,
+  hi = items.length - 1
+): number {
   let result = lo - 1
   while (lo <= hi) {
     const mid = (lo + hi) >> 1
-    if (track.points[mid].t <= tMs) {
+    if (items[mid].t <= tMs) {
       result = mid
       lo = mid + 1
     } else {
@@ -46,7 +52,7 @@ export function findNeighborsInTrack(track: Track, tMs: number): NeighborPair {
   let afterSeg = -1
   for (let segIdx = 0; segIdx < track.segments.length; segIdx++) {
     const seg = track.segments[segIdx]
-    const idx = lowerBound(track, tMs, seg.startIdx, seg.endIdx)
+    const idx = lowerBoundByT(track.points, tMs, seg.startIdx, seg.endIdx)
     if (idx >= seg.startIdx) {
       const cand = ref(track, idx, tMs)
       if (!before || cand.t > before.t) {

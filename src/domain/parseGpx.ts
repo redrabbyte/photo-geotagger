@@ -4,8 +4,9 @@ export class GpxParseError extends Error {}
 
 /**
  * Parse GPX XML into Tracks. Points without a <time> are dropped (they cannot
- * participate in time matching); a track whose points ALL lack time raises an
- * error so the UI can explain the file is unusable for matching.
+ * participate in time matching). Unusable tracks (no points, or none with a
+ * timestamp) are skipped — an error is raised only when NO track in the file
+ * survives, so one empty placeholder <trk> cannot discard the good ones.
  */
 export function parseGpx(
   xml: string,
@@ -23,6 +24,7 @@ export function parseGpx(
   }
 
   const tracks: Track[] = []
+  let firstSkipReason: string | undefined
   trkElems.forEach((trk, trkIdx) => {
     const name =
       trk.getElementsByTagName('name')[0]?.textContent?.trim() ||
@@ -58,11 +60,11 @@ export function parseGpx(
     }
 
     if (points.length === 0) {
-      throw new GpxParseError(
+      firstSkipReason ??=
         droppedNoTime > 0
           ? `${fileName}: trackpoints have no timestamps — cannot use for time matching`
           : `${fileName}: track "${name}" contains no valid trackpoints`
-      )
+      return
     }
 
     tracks.push({
@@ -76,5 +78,8 @@ export function parseGpx(
       endMs: points[points.length - 1].t,
     })
   })
+  if (tracks.length === 0) {
+    throw new GpxParseError(firstSkipReason ?? `${fileName}: no usable tracks`)
+  }
   return tracks
 }
