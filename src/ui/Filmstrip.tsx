@@ -262,7 +262,7 @@ export function Filmstrip() {
           return (
             <div
               key={p.id}
-              className={`film-item status-${status}${selected ? ' selected' : ''}`}
+              className={`film-item${selected ? ' selected' : ''}`}
               style={{ left: idx * ITEM_W, borderTopColor: src?.color ?? '#888' }}
               onClick={(e) => onItemClick(p, e)}
               title={`${p.fileName}\n${formatUtc(t)}\n${STATUS_LABEL[status]}${p.scanError ? `\nscan error: ${p.scanError}` : ''}${p.writeError ? `\nwrite error: ${p.writeError}` : ''}`}

@@ -1,21 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../state/store'
 import { exportDraftGpx } from '../services/appActions'
-import { formatUtc } from './format'
-
-/** Epoch ms → value for <input type="datetime-local" step="1"> (shown as UTC). */
-function toLocalInput(t: number): string {
-  return new Date(t).toISOString().slice(0, 19)
-}
-
-function fromLocalInput(v: string): number | undefined {
-  const t = Date.parse(`${v}Z`)
-  return Number.isFinite(t) ? t : undefined
-}
+import { formatUtc, fromUtcInput, toUtcInput } from './format'
 
 function PointTimeEditor({ index, t, stretchFrom }: { index: number; t: number; stretchFrom?: number }) {
-  const [value, setValue] = useState(toLocalInput(t))
-  useEffect(() => setValue(toLocalInput(t)), [t, index])
+  const [value, setValue] = useState(toUtcInput(t))
+  useEffect(() => setValue(toUtcInput(t)), [t, index])
 
   /**
    * quiet = called from onChange: commit valid values immediately but stay
@@ -23,12 +13,12 @@ function PointTimeEditor({ index, t, stretchFrom }: { index: number; t: number; 
    * taps a canvas, so waiting for blur used to lose the edit entirely.
    */
   const commit = (raw: string, quiet: boolean) => {
-    const ms = fromLocalInput(raw)
+    const ms = fromUtcInput(raw)
     const store = useStore.getState()
     if (ms === undefined) {
       if (!quiet) {
         store.notify('error', 'Invalid time')
-        setValue(toLocalInput(t))
+        setValue(toUtcInput(t))
       }
       return
     }
@@ -37,7 +27,7 @@ function PointTimeEditor({ index, t, stretchFrom }: { index: number; t: number; 
       store.stretchDraft(stretchFrom, index, ms)
       if (!quiet && useStore.getState().draft?.points === before) {
         store.notify('error', 'Stretch rejected — the new time must stay on the same side of the anchor')
-        setValue(toLocalInput(t))
+        setValue(toUtcInput(t))
       }
     } else {
       store.setDraftTimeAt(index, ms)

@@ -3,6 +3,17 @@ export function formatUtc(ms: number | undefined): string {
   return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
 }
 
+/** Epoch ms → value for <input type="datetime-local" step="1"> (shown as UTC). */
+export function toUtcInput(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 19)
+}
+
+/** <input type="datetime-local"> value interpreted as UTC → epoch ms. */
+export function fromUtcInput(value: string): number | undefined {
+  const t = Date.parse(`${value}Z`)
+  return Number.isFinite(t) ? t : undefined
+}
+
 /** Format a signed millisecond offset as ±hh:mm:ss. */
 export function formatOffset(ms: number): string {
   const sign = ms < 0 ? '-' : '+'

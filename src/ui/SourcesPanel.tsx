@@ -12,7 +12,8 @@ import {
 } from '../services/appActions'
 import { positionAtTime } from '../domain/positionAtTime'
 import { trackFromPhotos } from '../domain/trackFromPhotos'
-import { formatOffset, parseOffset } from './format'
+import { formatOffset, fromUtcInput, parseOffset, toUtcInput } from './format'
+import { Modal } from './Modal'
 
 function OffsetEditor({ sourceId, value }: { sourceId: string; value: number }) {
   const [text, setText] = useState(formatOffset(value))
@@ -292,14 +293,14 @@ function NewTrackDialog({ onClose }: { onClose: () => void }) {
   const cursorMs = useStore((s) => s.timelineCursorMs)
   const defaultStart = cursorMs ?? Date.now()
   const [name, setName] = useState('Manual track')
-  const [startText, setStartText] = useState(new Date(defaultStart).toISOString().slice(0, 19))
-  const [endText, setEndText] = useState(new Date(defaultStart + 3600_000).toISOString().slice(0, 19))
+  const [startText, setStartText] = useState(toUtcInput(defaultStart))
+  const [endText, setEndText] = useState(toUtcInput(defaultStart + 3600_000))
 
   const create = () => {
     const store = useStore.getState()
-    const startT = Date.parse(`${startText}Z`)
-    const endT = Date.parse(`${endText}Z`)
-    if (!Number.isFinite(startT) || !Number.isFinite(endT)) {
+    const startT = fromUtcInput(startText)
+    const endT = fromUtcInput(endText)
+    if (startT === undefined || endT === undefined) {
       store.notify('error', 'Invalid start or end time')
       return
     }
@@ -321,21 +322,19 @@ function NewTrackDialog({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>New manual track</h3>
-        <p className="muted small">
-          Times are UTC. The start defaults to the timeline cursor (click the timeline to set it).
-          After creating, {`you'll`} place the start/end on the map, then refine by dragging.
-        </p>
-        <label className="small">Name <input value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label className="small">Start (UTC) <input type="datetime-local" step={1} value={startText} onChange={(e) => setStartText(e.target.value)} /></label>
-        <label className="small">End (UTC) <input type="datetime-local" step={1} value={endText} onChange={(e) => setEndText(e.target.value)} /></label>
-        <div className="modal-actions">
-          <button onClick={onClose}>Cancel</button>
-          <button className="primary" onClick={create}>Create & place on map</button>
-        </div>
+    <Modal onClose={onClose}>
+      <h3>New manual track</h3>
+      <p className="muted small">
+        Times are UTC. The start defaults to the timeline cursor (click the timeline to set it).
+        After creating, {`you'll`} place the start/end on the map, then refine by dragging.
+      </p>
+      <label className="small">Name <input value={name} onChange={(e) => setName(e.target.value)} /></label>
+      <label className="small">Start (UTC) <input type="datetime-local" step={1} value={startText} onChange={(e) => setStartText(e.target.value)} /></label>
+      <label className="small">End (UTC) <input type="datetime-local" step={1} value={endText} onChange={(e) => setEndText(e.target.value)} /></label>
+      <div className="modal-actions">
+        <button onClick={onClose}>Cancel</button>
+        <button className="primary" onClick={create}>Create & place on map</button>
       </div>
-    </div>
+    </Modal>
   )
 }

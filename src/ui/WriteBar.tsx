@@ -4,6 +4,7 @@ import { useStore } from '../state/store'
 import { prepareExiftool, requestWriteStop, writeDirtyFlow, writeTimesFlow } from '../services/appActions'
 import { timeCorrectionFor, type WriteMode } from '../services/writePipeline'
 import { formatEtaMs } from './format'
+import { Modal } from './Modal'
 
 export function WriteBar() {
   const photos = useStore((s) => s.photos)
@@ -226,80 +227,76 @@ export function WriteBar() {
           const targets = flowTargets(flow)
           const stripped = strippedIn(flow)
           return (
-            <div className="modal-backdrop" onClick={() => setConfirmStripped(null)}>
-              <div className="modal" onClick={(e) => e.stopPropagation()}>
-                <h3>
-                  {stripped.length} file{stripped.length === 1 ? ' was' : 's were'} read without position data
-                </h3>
-                <p>
-                  Android strips position data from photos when a browser reads them — the original
-                  file may still contain its real location, but this app only ever received a
-                  stripped copy.
-                </p>
-                <p>
-                  <strong>Writing replaces the file with that stripped copy.</strong> Whatever
-                  location the original held is then permanently gone. Only proceed for these
-                  files if that is what you want.
-                </p>
-                <div className="modal-actions">
-                  <button onClick={() => setConfirmStripped(null)}>Cancel</button>
-                  {targets.length > stripped.length && (
-                    <button
-                      onClick={() => {
-                        setConfirmStripped(null)
-                        const strippedIds = new Set(stripped.map((p) => p.id))
-                        runFlow(flow, targets.filter((p) => !strippedIds.has(p.id)).map((p) => p.id))
-                      }}
-                    >
-                      Skip {stripped.length} stripped, write {targets.length - stripped.length}
-                    </button>
-                  )}
+            <Modal onClose={() => setConfirmStripped(null)}>
+              <h3>
+                {stripped.length} file{stripped.length === 1 ? ' was' : 's were'} read without position data
+              </h3>
+              <p>
+                Android strips position data from photos when a browser reads them — the original
+                file may still contain its real location, but this app only ever received a
+                stripped copy.
+              </p>
+              <p>
+                <strong>Writing replaces the file with that stripped copy.</strong> Whatever
+                location the original held is then permanently gone. Only proceed for these
+                files if that is what you want.
+              </p>
+              <div className="modal-actions">
+                <button onClick={() => setConfirmStripped(null)}>Cancel</button>
+                {targets.length > stripped.length && (
                   <button
-                    className="primary"
                     onClick={() => {
                       setConfirmStripped(null)
-                      runFlow(flow)
+                      const strippedIds = new Set(stripped.map((p) => p.id))
+                      runFlow(flow, targets.filter((p) => !strippedIds.has(p.id)).map((p) => p.id))
                     }}
                   >
-                    Write all {targets.length}
+                    Skip {stripped.length} stripped, write {targets.length - stripped.length}
                   </button>
-                </div>
+                )}
+                <button
+                  className="primary"
+                  onClick={() => {
+                    setConfirmStripped(null)
+                    runFlow(flow)
+                  }}
+                >
+                  Write all {targets.length}
+                </button>
               </div>
-            </div>
+            </Modal>
           )
         })()}
 
       {confirmExiftool && (
-        <div className="modal-backdrop" onClick={() => setConfirmExiftool(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Write directly into RAW files?</h3>
-            <p>
-              ExifTool mode rewrites every file in place — including RAW formats like Sony .ARW —
-              using ExifTool 13.42 compiled to WebAssembly (~25 MB, downloads on first write).
-            </p>
-            <p>
-              Every rewritten file is verified (GPS re-read, size sanity-checked) before it
-              replaces the original, but in-browser RAW writing is less battle-tested than
-              desktop ExifTool. Keeping <strong>Backup originals</strong> enabled is strongly
-              recommended.
-            </p>
-            <div className="modal-actions">
-              <button onClick={() => setConfirmExiftool(false)}>Cancel</button>
-              <button
-                className="primary"
-                onClick={() => {
-                  useStore.getState().setSettings({ writeMode: 'exiftool', backupOriginals: true })
-                  setConfirmExiftool(false)
-                  // Boot the WASM workers now, while the user is still
-                  // assigning positions — the first write then starts warm.
-                  prepareExiftool()
-                }}
-              >
-                Use ExifTool mode
-              </button>
-            </div>
+        <Modal onClose={() => setConfirmExiftool(false)}>
+          <h3>Write directly into RAW files?</h3>
+          <p>
+            ExifTool mode rewrites every file in place — including RAW formats like Sony .ARW —
+            using ExifTool 13.42 compiled to WebAssembly (~25 MB, downloads on first write).
+          </p>
+          <p>
+            Every rewritten file is verified (GPS re-read, size sanity-checked) before it
+            replaces the original, but in-browser RAW writing is less battle-tested than
+            desktop ExifTool. Keeping <strong>Backup originals</strong> enabled is strongly
+            recommended.
+          </p>
+          <div className="modal-actions">
+            <button onClick={() => setConfirmExiftool(false)}>Cancel</button>
+            <button
+              className="primary"
+              onClick={() => {
+                useStore.getState().setSettings({ writeMode: 'exiftool', backupOriginals: true })
+                setConfirmExiftool(false)
+                // Boot the WASM workers now, while the user is still
+                // assigning positions — the first write then starts warm.
+                prepareExiftool()
+              }}
+            >
+              Use ExifTool mode
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

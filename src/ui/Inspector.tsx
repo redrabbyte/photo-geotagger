@@ -13,6 +13,7 @@ import { formatCoord, formatDeltaMs, formatUtc } from './format'
 import exifr from 'exifr'
 import { orientBlob } from '../services/exif/orient'
 import { captureVideoFrame } from '../services/videoThumb'
+import { Modal } from './Modal'
 
 const METHODS: { key: Extract<AssignmentMethod, 'closest' | 'before' | 'after' | 'interpolated'>; label: string; hint: string }[] = [
   { key: 'interpolated', label: 'Interpolate', hint: 'Position between the reference points before and after the photo time' },
@@ -295,27 +296,25 @@ export function Inspector() {
       </div>
 
       {exifDump !== undefined && (
-        <div className="modal-backdrop" onClick={() => setExifDump(undefined)}>
-          <div className="modal exif-dump" onClick={(e) => e.stopPropagation()}>
-            {exifDump === 'loading' ? (
-              <>
-                <h3>Reading metadata…</h3>
-                <p className="muted small">First use downloads ExifTool (~25 MB) — this can take a moment.</p>
-              </>
-            ) : (
-              <>
-                <h3>{exifDump.fileName}</h3>
-                <p className="muted small">
-                  Every tag ExifTool finds in the file. GPS lines (if any) contain “GPS”.
-                </p>
-                <pre>{exifDump.text}</pre>
-              </>
-            )}
-            <div className="modal-actions">
-              <button onClick={() => setExifDump(undefined)}>Close</button>
-            </div>
+        <Modal className="exif-dump" onClose={() => setExifDump(undefined)}>
+          {exifDump === 'loading' ? (
+            <>
+              <h3>Reading metadata…</h3>
+              <p className="muted small">First use downloads ExifTool (~25 MB) — this can take a moment.</p>
+            </>
+          ) : (
+            <>
+              <h3>{exifDump.fileName}</h3>
+              <p className="muted small">
+                Every tag ExifTool finds in the file. GPS lines (if any) contain “GPS”.
+              </p>
+              <pre>{exifDump.text}</pre>
+            </>
+          )}
+          <div className="modal-actions">
+            <button onClick={() => setExifDump(undefined)}>Close</button>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )
