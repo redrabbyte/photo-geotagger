@@ -60,6 +60,11 @@ export function Filmstrip() {
   }
 
   const allCount = Object.keys(photos).length
+  // The stripped filter state only exists when stripped files are present.
+  const hasStripped = useMemo(() => Object.values(photos).some((p) => p.meta?.gpsEmpty), [photos])
+  useEffect(() => {
+    if (!hasStripped) setFilterMode((m) => (m === 'untagged+stripped' ? 'untagged' : m))
+  }, [hasStripped])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -217,9 +222,15 @@ export function Filmstrip() {
         </button>
         <button
           className={filterMode !== 'all' ? 'primary' : ''}
-          title="Cycle the filter: all photos → only photos without any position (Android-stripped ones excluded — they had GPS on the phone) → untagged plus stripped photos (GPS tags present but emptied)"
+          title={
+            hasStripped
+              ? 'Cycle the filter: all photos → only photos without any position (Android-stripped ones excluded — they had GPS on the phone) → untagged plus stripped photos (GPS tags present but emptied)'
+              : 'Toggle the filter: all photos ↔ only photos without any position'
+          }
           onClick={() =>
-            setFilterMode((m) => (m === 'all' ? 'untagged' : m === 'untagged' ? 'untagged+stripped' : 'all'))
+            setFilterMode((m) =>
+              m === 'all' ? 'untagged' : m === 'untagged' && hasStripped ? 'untagged+stripped' : 'all'
+            )
           }
         >
           {filterMode === 'all'
