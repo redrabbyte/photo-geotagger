@@ -14,6 +14,7 @@ export interface ScanCallbacks {
 // a clicked photo could sit behind two dozen RAW meta reads.
 const BATCH_SIZE = 8
 const THUMB_BATCH_SIZE = 4
+const PRIORITY_BATCH_SIZE = 4
 
 /**
  * Manages a pool of scan workers. Metadata jobs always run before thumbnail
@@ -29,21 +30,60 @@ export class ScanClient {
   /** User-facing thumbnails (selected photo) — served before bulk work. */
   private priorityThumbQueue: ScanJob[] = []
   private busy: Set<Worker> = new Set()
+  /** The batch each busy worker is processing — requeued if it crashes. */
+  private inFlight = new Map<Worker, ScanRequest>()
+  /** Per-photo crash count: a job that kills two workers is poison. */
+  private crashCounts = new Map<string, number>()
   private callbacks: ScanCallbacks
 
   constructor(callbacks: ScanCallbacks, poolSize = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1))) {
     this.callbacks = callbacks
     for (let i = 0; i < poolSize; i++) {
-      const worker = new Worker(new URL('../workers/scan.worker.ts', import.meta.url), {
-        type: 'module',
-      })
-      worker.onmessage = (event: MessageEvent<ScanResponse>) => this.handleMessage(worker, event.data)
-      worker.onerror = () => {
-        this.busy.delete(worker)
-        this.pump()
-      }
-      this.workers.push(worker)
+      this.workers.push(this.makeWorker())
     }
+  }
+
+  private makeWorker(): Worker {
+    const worker = new Worker(new URL('../workers/scan.worker.ts', import.meta.url), {
+      type: 'module',
+    })
+    worker.onmessage = (event: MessageEvent<ScanResponse>) => this.handleMessage(worker, event.data)
+    worker.onerror = () => this.handleWorkerCrash(worker)
+    return worker
+  }
+
+  /**
+   * A hard-crashed worker (e.g. OOM on a huge file) is unusable: replace it
+   * and put its batch back so no photo silently stays 'pending' and onIdle
+   * cannot fire while work is actually lost. Jobs that crash a second
+   * worker are reported as errors instead of looping forever.
+   */
+  private handleWorkerCrash(worker: Worker): void {
+    const request = this.inFlight.get(worker)
+    this.inFlight.delete(worker)
+    this.busy.delete(worker)
+    worker.terminate()
+    const idx = this.workers.indexOf(worker)
+    const fresh = this.makeWorker()
+    if (idx >= 0) this.workers[idx] = fresh
+    else this.workers.push(fresh)
+
+    if (request) {
+      const retry: ScanJob[] = []
+      for (const job of request.jobs) {
+        const crashes = (this.crashCounts.get(job.id) ?? 0) + 1
+        this.crashCounts.set(job.id, crashes)
+        if (crashes >= 2) {
+          if (request.type === 'scan') this.callbacks.onError(job.id, 'Scan worker crashed on this file')
+          else this.callbacks.onThumbFailed(job.id)
+        } else {
+          retry.push(job)
+        }
+      }
+      if (request.type === 'scan') this.metaQueue.unshift(...retry)
+      else this.thumbQueue.unshift(...retry)
+    }
+    this.pump()
   }
 
   /**
@@ -96,6 +136,7 @@ export class ScanClient {
         break
       case 'batch-done':
         this.busy.delete(worker)
+        this.inFlight.delete(worker)
         this.pump()
         break
     }
@@ -106,7 +147,7 @@ export class ScanClient {
       if (this.busy.has(worker)) continue
       let request: ScanRequest | undefined
       if (this.priorityMetaQueue.length > 0) {
-        request = { type: 'scan', jobs: this.priorityMetaQueue.splice(0, 4) }
+        request = { type: 'scan', jobs: this.priorityMetaQueue.splice(0, PRIORITY_BATCH_SIZE) }
       } else if (this.priorityThumbQueue.length > 0) {
         request = { type: 'thumb', jobs: this.priorityThumbQueue.splice(0, THUMB_BATCH_SIZE) }
       } else if (this.metaQueue.length > 0) {
@@ -117,6 +158,7 @@ export class ScanClient {
         break
       }
       this.busy.add(worker)
+      this.inFlight.set(worker, request)
       worker.postMessage(request)
     }
     if (this.pending === 0 && this.busy.size === 0) {
@@ -124,13 +166,4 @@ export class ScanClient {
     }
   }
 
-  dispose(): void {
-    for (const w of this.workers) w.terminate()
-    this.workers = []
-    this.metaQueue = []
-    this.thumbQueue = []
-    this.priorityMetaQueue = []
-    this.priorityThumbQueue = []
-    this.busy.clear()
-  }
 }

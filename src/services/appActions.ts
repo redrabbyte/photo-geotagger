@@ -105,6 +105,12 @@ function getScanClient(): ScanClient {
         }
       },
       onThumb: (id, url) => {
+        // A priority request may have raced a queued one — if a thumb already
+        // landed, drop this duplicate instead of orphaning its blob URL.
+        if (useStore.getState().photos[id]?.thumbUrl) {
+          URL.revokeObjectURL(url)
+          return
+        }
         // Thumbnails are on-demand and user-facing: show them immediately.
         queueUpdate({ id, kind: 'thumb', url })
         if (flushTimer) {
@@ -197,7 +203,8 @@ async function pumpVideoThumbs(): Promise<void> {
       if (!p || p.thumbUrl || !p.fileHandle) continue
       try {
         const blob = await captureVideoFrame(await p.fileHandle.getFile())
-        if (blob) {
+        // Re-check: a racing duplicate request may have delivered meanwhile.
+        if (blob && !useStore.getState().photos[id]?.thumbUrl) {
           // User-facing like worker thumbs: show immediately, no batch delay.
           queueUpdate({ id, kind: 'thumb', url: URL.createObjectURL(blob) })
           if (flushTimer) {
