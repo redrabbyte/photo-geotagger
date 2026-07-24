@@ -5,6 +5,12 @@ times) to photos and videos from multiple cameras and phones. Files never
 leave your machine — the app reads and writes local folders you pick,
 entirely in the browser.
 
+## Disclaimer
+
+100% vibe coded.
+All features tested with my holiday photo collection of mobile jpgs, mp4s and sony raws.  
+Tested in Android and Windows Chrome. No guarantees elsewhere :D
+
 ## What it does
 
 - **Load photos and videos from local folders** — each folder becomes a named
