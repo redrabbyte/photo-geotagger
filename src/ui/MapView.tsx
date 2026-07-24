@@ -28,6 +28,9 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'raster',
       tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
       tileSize: 256,
+      // osm.org serves tiles up to z19 — beyond that MapLibre must overscale
+      // instead of requesting tiles that 400 (and spam CORS errors).
+      maxzoom: 19,
       attribution: '© OpenStreetMap contributors',
     },
   },
