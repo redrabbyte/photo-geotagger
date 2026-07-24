@@ -11,6 +11,7 @@ import {
   rememberGpxHandles,
 } from './fs/handleStore'
 import { ScanClient } from './scanClient'
+import { captureVideoFrame } from './videoThumb'
 import {
   recommendedExiftoolPool,
   resetIdleExiftoolWorkers,
@@ -169,9 +170,49 @@ export function ensureThumbs(ids: string[], priority = false): void {
     const p = store.photos[id]
     if (!p || p.thumbUrl || !p.fileHandle) continue
     thumbsRequested.add(id)
-    jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind })
+    if (p.kind === 'video') {
+      // Videos have no embedded preview and <video> exists only on the main
+      // thread — they take a separate lazy, strictly serial capture queue.
+      videoThumbQueue.push(p.id)
+      void pumpVideoThumbs()
+    } else {
+      jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind })
+    }
   }
   if (jobs.length > 0) getScanClient().enqueueThumbs(jobs, priority)
+}
+
+const videoThumbQueue: string[] = []
+let videoThumbPumping = false
+
+/** One decoder at a time: each capture spins up a full video pipeline. */
+async function pumpVideoThumbs(): Promise<void> {
+  if (videoThumbPumping) return
+  videoThumbPumping = true
+  try {
+    for (;;) {
+      const id = videoThumbQueue.shift()
+      if (!id) return
+      const p = useStore.getState().photos[id]
+      if (!p || p.thumbUrl || !p.fileHandle) continue
+      try {
+        const blob = await captureVideoFrame(await p.fileHandle.getFile())
+        if (blob) {
+          // User-facing like worker thumbs: show immediately, no batch delay.
+          queueUpdate({ id, kind: 'thumb', url: URL.createObjectURL(blob) })
+          if (flushTimer) {
+            clearTimeout(flushTimer)
+            flushTimer = undefined
+          }
+          flushUpdates()
+        }
+      } catch {
+        // undecodable (e.g. HEVC without hardware) — keep the placeholder
+      }
+    }
+  } finally {
+    videoThumbPumping = false
+  }
 }
 
 async function persistCurrentSources(): Promise<void> {
