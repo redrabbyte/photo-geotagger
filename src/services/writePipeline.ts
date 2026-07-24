@@ -90,7 +90,10 @@ let exiftoolPoolSize = 1
 let nextWorkerIndex = 0
 let nextRequestId = 1
 type SuccessResponse = Extract<ExiftoolResponse, { ok: true }>
-const pendingRequests = new Map<number, { resolve: (r: SuccessResponse) => void; reject: (e: Error) => void }>()
+const pendingRequests = new Map<
+  number,
+  { worker: Worker; resolve: (r: SuccessResponse) => void; reject: (e: Error) => void }
+>()
 
 /** More workers multiply RAW write throughput at the cost of memory. */
 export function setExiftoolPoolSize(n: number): void {
@@ -147,7 +150,7 @@ export function warmupExiftool(): void {
   for (const worker of exiftoolWorkers) {
     const requestId = nextRequestId++
     new Promise<SuccessResponse>((resolve, reject) => {
-      pendingRequests.set(requestId, { resolve, reject })
+      pendingRequests.set(requestId, { worker, resolve, reject })
       worker.postMessage({ type: 'warmup', requestId } satisfies ExiftoolRequest)
     }).catch(() => undefined)
   }
@@ -166,11 +169,17 @@ function makeExiftoolWorker(): Worker {
     else pending.reject(new Error(msg.error))
   }
   worker.onerror = (e) => {
+    // Only THIS worker's requests failed — healthy workers keep their
+    // in-flight batches. The pool refills lazily on the next request.
     const err = new Error(e.message || 'ExifTool worker crashed')
-    for (const p of pendingRequests.values()) p.reject(err)
-    pendingRequests.clear()
-    for (const w of exiftoolWorkers) w.terminate()
-    exiftoolWorkers = []
+    for (const [id, p] of pendingRequests) {
+      if (p.worker === worker) {
+        pendingRequests.delete(id)
+        p.reject(err)
+      }
+    }
+    worker.terminate()
+    exiftoolWorkers = exiftoolWorkers.filter((w) => w !== worker)
   }
   return worker
 }
@@ -193,7 +202,7 @@ function exiftoolRequest(
   const requestId = nextRequestId++
   const worker = getExiftoolWorker()
   return new Promise<SuccessResponse>((resolve, reject) => {
-    pendingRequests.set(requestId, { resolve, reject })
+    pendingRequests.set(requestId, { worker, resolve, reject })
     worker.postMessage({ ...request, requestId } as ExiftoolRequest, transfer)
   })
 }
@@ -228,6 +237,26 @@ export async function exiftoolInspect(fileName: string, bytes: ArrayBuffer): Pro
   return result.text
 }
 
+/** Copy the original to <name>.orig when enabled (needs the folder handle —
+ * individually-picked files have none, so backups are silently impossible). */
+async function backupIfNeeded(photo: Photo, source: Source, backup: boolean, dirs?: DirCache): Promise<void> {
+  if (!backup || !source.dirHandle) return
+  const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
+  await backupOriginal(dir, photo.fileName)
+}
+
+/** The shared tail of every in-place write: backup first, then commit. */
+async function backupThenWrite(
+  photo: Photo,
+  source: Source,
+  bytes: Uint8Array | string,
+  backup: boolean,
+  dirs?: DirCache
+): Promise<void> {
+  await backupIfNeeded(photo, source, backup, dirs)
+  await writeFileBytes(photo.fileHandle!, bytes)
+}
+
 async function writeJpegInPlace(
   photo: Photo,
   source: Source,
@@ -255,12 +284,7 @@ async function writeJpegInPlace(
     expectedDateTimeMs: time?.wallClockMs,
   })
 
-  // Individually-picked files have no folder handle: backups are impossible.
-  if (backup && source.dirHandle) {
-    const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
-    await backupOriginal(dir, photo.fileName)
-  }
-  await writeFileBytes(photo.fileHandle, rewritten)
+  await backupThenWrite(photo, source, rewritten, backup, dirs)
 }
 
 async function writeSidecar(
@@ -331,11 +355,7 @@ async function writeViaExiftool(
   // Worker verifies GPS round-trip and size sanity before returning.
   const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
 
-  if (backup && source.dirHandle) {
-    const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
-    await backupOriginal(dir, photo.fileName)
-  }
-  await writeFileBytes(photo.fileHandle, new Uint8Array(rewritten))
+  await backupThenWrite(photo, source, new Uint8Array(rewritten), backup, dirs)
 }
 
 /**
@@ -383,11 +403,7 @@ export async function writeTimeOnlyPhoto(
     await assertRewritableSize(photo)
     const original = await readFileBytes(photo.fileHandle)
     const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')
-    if (options.backupOriginals && source.dirHandle) {
-      const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
-      await backupOriginal(dir, photo.fileName)
-    }
-    await writeFileBytes(photo.fileHandle, new Uint8Array(rewritten))
+    await backupThenWrite(photo, source, new Uint8Array(rewritten), options.backupOriginals, dirs)
     return 'exif'
   }
   if (photo.kind === 'jpeg') {
@@ -398,11 +414,7 @@ export async function writeTimeOnlyPhoto(
       originalSize: original.byteLength,
       expectedDateTimeMs: time.wallClockMs,
     })
-    if (options.backupOriginals && source.dirHandle) {
-      const dir = await directoryOfCached(source.dirHandle, source.id, photo.relativePath, dirs)
-      await backupOriginal(dir, photo.fileName)
-    }
-    await writeFileBytes(photo.fileHandle, rewritten)
+    await backupThenWrite(photo, source, rewritten, options.backupOriginals, dirs)
     return 'exif'
   }
   await writeSidecar(photo, source, undefined, time, dirs)
