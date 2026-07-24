@@ -118,6 +118,66 @@ body {
   padding: 10px;
 }
 
+/* ---- map place search ---- */
+.map-search-toggle {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  padding: 0;
+}
+
+.map-search {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  width: min(320px, calc(100% - 20px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.map-search-row {
+  display: flex;
+  gap: 6px;
+}
+
+.map-search-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.map-search-note {
+  padding: 6px 4px 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.map-search-results {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.map-search-results li {
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.map-search-results li:hover {
+  background: rgba(100, 149, 237, 0.25);
+}
+
 .match-sources {
   display: flex;
   gap: 14px;

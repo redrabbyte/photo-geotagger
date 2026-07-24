@@ -8,6 +8,7 @@ import { projectOntoTrack } from '../domain/projectOntoTrack'
 import { projectOntoDraft, type TrackDraft } from '../domain/trackDraft'
 import { useStore } from '../state/store'
 import { formatDeltaMs, formatUtc } from './format'
+import { MapSearch } from './MapSearch'
 
 const DRAFT_LINE_COLOR = '#ffd54f'
 const DRAFT_MANUAL_COLOR = '#ff7043'
@@ -525,6 +526,7 @@ export function MapView() {
   return (
     <div className="map-wrap">
       <div ref={containerRef} className="map-container" />
+      <MapSearch />
       {calibrate && (
         <div className="map-banner">
           Calibrating “{calibrate.photoName}”: click the spot on a track where this photo was taken.
