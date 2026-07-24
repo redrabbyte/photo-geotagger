@@ -73,6 +73,24 @@ describe('readVideoCaptureDate', () => {
     expect(meta.gps?.lon).toBeCloseTo(151.2153, 4)
   })
 
+  it('handles a size-0 ("extends to end") box inside moov', async () => {
+    const t = Date.parse('2026-07-04T17:30:00Z')
+    // mvhd as the last child of moov, with the spec's "0 = to end" size.
+    const zeroSized = mvhd(t).slice()
+    new DataView(zeroSized.buffer).setUint32(0, 0)
+    const moov = box('moov', concat(box('free', new Uint8Array(4)), zeroSized))
+    const blob = new Blob([concat(FTYP, moov)])
+    expect(await readVideoCaptureDate(blob)).toEqual({ wallClockMs: t, tzOffsetMin: 0 })
+  })
+
+  it('handles a size-0 moov as the last top-level box', async () => {
+    const t = Date.parse('2026-07-04T17:30:00Z')
+    const moov = box('moov', mvhd(t))
+    new DataView(moov.buffer).setUint32(0, 0)
+    const blob = new Blob([concat(FTYP, box('mdat', new Uint8Array(100)), moov)])
+    expect(await readVideoCaptureDate(blob)).toEqual({ wallClockMs: t, tzOffsetMin: 0 })
+  })
+
   it('rejects unset camera clocks and garbage', async () => {
     const blob = new Blob([concat(FTYP, box('moov', mvhd(Date.parse('1904-01-02T00:00:00Z'))))])
     expect(await readVideoCaptureDate(blob)).toBeUndefined()

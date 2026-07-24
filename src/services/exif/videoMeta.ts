@@ -70,29 +70,65 @@ function fourCC(view: DataView, offset: number): string {
   )
 }
 
+interface BoxHeader {
+  type: string
+  /** Total box size including the header. */
+  size: number
+  headerLen: number
+}
+
+/**
+ * Parse one ISOBMFF box header. `remaining` is the distance to the end of
+ * the enclosing container — a declared size of 0 means "extends to the end"
+ * and resolves against it. Undefined for truncated or nonsensical headers.
+ */
+function parseBoxHeader(header: DataView, remaining: number): BoxHeader | undefined {
+  if (header.byteLength < 8) return undefined
+  let size = header.getUint32(0)
+  const type = fourCC(header, 4)
+  let headerLen = 8
+  if (size === 1) {
+    if (header.byteLength < 16) return undefined
+    size = Number(header.getBigUint64(8))
+    headerLen = 16
+  } else if (size === 0) {
+    size = remaining
+  }
+  if (size < headerLen) return undefined
+  return { type, size, headerLen }
+}
+
+/** Walk a file's top-level boxes, reading only the 16 header bytes of each. */
+async function* topLevelBoxes(blob: Blob): AsyncGenerator<{ header: BoxHeader; offset: number }> {
+  let offset = 0
+  for (let guard = 0; guard < 64 && offset + 8 <= blob.size; guard++) {
+    const view = new DataView(await blob.slice(offset, Math.min(blob.size, offset + 16)).arrayBuffer())
+    const header = parseBoxHeader(view, blob.size - offset)
+    if (!header) return
+    yield { header, offset }
+    offset += header.size
+  }
+}
+
+/** Walk the direct children of an already-loaded box body. */
+function* childBoxes(body: DataView): Generator<{ header: BoxHeader; offset: number }> {
+  let offset = 0
+  while (offset + 8 <= body.byteLength) {
+    const view = new DataView(body.buffer, body.byteOffset + offset, Math.min(16, body.byteLength - offset))
+    const header = parseBoxHeader(view, body.byteLength - offset)
+    if (!header) return
+    yield { header, offset }
+    offset += header.size
+  }
+}
+
 /** Walk top-level boxes and return the moov body (moov may sit at the start
  * or the end of the file). */
 async function findMoov(blob: Blob): Promise<Uint8Array | undefined> {
-  let offset = 0
-  for (let guard = 0; guard < 64 && offset + 8 <= blob.size; guard++) {
-    const header = new DataView(await blob.slice(offset, Math.min(blob.size, offset + 16)).arrayBuffer())
-    if (header.byteLength < 8) return undefined
-    let size = header.getUint32(0)
-    const type = fourCC(header, 4)
-    let headerLen = 8
-    if (size === 1) {
-      if (header.byteLength < 16) return undefined
-      size = Number(header.getBigUint64(8))
-      headerLen = 16
-    } else if (size === 0) {
-      size = blob.size - offset
-    }
-    if (size < headerLen) return undefined
-    if (type === 'moov') {
-      const end = Math.min(offset + size, offset + headerLen + MOOV_READ_LIMIT)
-      return new Uint8Array(await blob.slice(offset + headerLen, end).arrayBuffer())
-    }
-    offset += size
+  for await (const { header, offset } of topLevelBoxes(blob)) {
+    if (header.type !== 'moov') continue
+    const end = Math.min(offset + header.size, offset + header.headerLen + MOOV_READ_LIMIT)
+    return new Uint8Array(await blob.slice(offset + header.headerLen, end).arrayBuffer())
   }
   return undefined
 }
@@ -100,27 +136,16 @@ async function findMoov(blob: Blob): Promise<Uint8Array | undefined> {
 /** moov/mvhd creation_time (UTC, seconds since 1904). */
 function mvhdDateFromMoov(moov: Uint8Array): VideoDate | undefined {
   const body = new DataView(moov.buffer, moov.byteOffset, moov.byteLength)
-  let p = 0
-  while (p + 8 <= body.byteLength) {
-    let s = body.getUint32(p)
-    const t = fourCC(body, p + 4)
-    let hl = 8
-    if (s === 1) {
-      if (p + 16 > body.byteLength) break
-      s = Number(body.getBigUint64(p + 8))
-      hl = 16
-    }
-    if (s < hl) break
-    if (t === 'mvhd') {
-      if (p + hl + 12 > body.byteLength) break
-      const version = body.getUint8(p + hl)
-      const creation = version === 1 ? Number(body.getBigUint64(p + hl + 4)) : body.getUint32(p + hl + 4)
-      const ms = (creation - SECONDS_1904_TO_1970) * 1000
-      // 0 or garbage (cameras with unset clocks) → not usable.
-      if (ms < Date.UTC(1980, 0, 1)) return undefined
-      return { wallClockMs: ms, tzOffsetMin: 0 }
-    }
-    p += s
+  for (const { header, offset } of childBoxes(body)) {
+    if (header.type !== 'mvhd') continue
+    const p = offset + header.headerLen
+    if (p + 12 > body.byteLength) return undefined
+    const version = body.getUint8(p)
+    const creation = version === 1 ? Number(body.getBigUint64(p + 4)) : body.getUint32(p + 4)
+    const ms = (creation - SECONDS_1904_TO_1970) * 1000
+    // 0 or garbage (cameras with unset clocks) → not usable.
+    if (ms < Date.UTC(1980, 0, 1)) return undefined
+    return { wallClockMs: ms, tzOffsetMin: 0 }
   }
   return undefined
 }
@@ -138,9 +163,9 @@ function parseIso6709(s: string): GeoPoint | undefined {
 
 /** GPS from moov: the ©xyz UserData atom, else any ISO 6709 token (Keys). */
 function gpsFromMoov(moov: Uint8Array): GeoPoint | undefined {
-  // Lossy latin1-ish decode: box names and the coordinate strings are ASCII.
-  let text = ''
-  for (let i = 0; i < moov.length; i++) text += String.fromCharCode(moov[i])
+  // latin1 maps every byte to the same code point, so box names and the
+  // coordinate strings come through intact.
+  const text = new TextDecoder('latin1').decode(moov)
 
   // ©xyz atom: [2-byte length][2-byte language][ISO 6709 string]
   const xyz = text.indexOf('©xyz')
@@ -173,43 +198,30 @@ export async function metadataOnlyCopy(
   const FREE_BOX = new Uint8Array([0, 0, 0, 8, 0x66, 0x72, 0x65, 0x65])
   const parts: Uint8Array[] = []
   let total = 0
-  let offset = 0
-  for (let guard = 0; guard < 64 && offset + 8 <= blob.size; guard++) {
-    const header = new DataView(await blob.slice(offset, Math.min(blob.size, offset + 16)).arrayBuffer())
-    if (header.byteLength < 8) return undefined
-    let size = header.getUint32(0)
-    const type = fourCC(header, 4)
-    let headerLen = 8
-    if (size === 1) {
-      if (header.byteLength < 16) return undefined
-      size = Number(header.getBigUint64(8))
-      headerLen = 16
-    } else if (size === 0) {
-      size = blob.size - offset
-    }
-    if (size < headerLen || offset + size > blob.size) return undefined
+  let consumed = 0
+  for await (const { header, offset } of topLevelBoxes(blob)) {
+    if (offset + header.size > blob.size) return undefined
     // Anything not starting with ftyp is not an MP4 worth slimming down.
-    if (offset === 0 && type !== 'ftyp') return undefined
-    if (type === 'mdat') {
+    if (offset === 0 && header.type !== 'ftyp') return undefined
+    if (header.type === 'mdat') {
       parts.push(FREE_BOX)
       total += FREE_BOX.length
     } else {
-      if (total + size > limit) return undefined
-      parts.push(new Uint8Array(await blob.slice(offset, offset + size).arrayBuffer()))
-      total += size
+      if (total + header.size > limit) return undefined
+      parts.push(new Uint8Array(await blob.slice(offset, offset + header.size).arrayBuffer()))
+      total += header.size
     }
-    offset += size
-    if (offset === blob.size) {
-      const out = new Uint8Array(total)
-      let o = 0
-      for (const p of parts) {
-        out.set(p, o)
-        o += p.length
-      }
-      return out
-    }
+    consumed = offset + header.size
   }
-  return undefined
+  // Only a fully-walked file is a faithful copy (guard hit or bad box → bail).
+  if (consumed === 0 || consumed !== blob.size) return undefined
+  const out = new Uint8Array(total)
+  let o = 0
+  for (const p of parts) {
+    out.set(p, o)
+    o += p.length
+  }
+  return out
 }
 
 /** Best available capture date + GPS of a video file. */
