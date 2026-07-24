@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { exiftoolInspect } from '../services/writePipeline'
 import { readFileBytes } from '../services/fs/safeWrite'
+import { metadataOnlyCopy } from '../services/exif/videoMeta'
 import type { AssignmentMethod } from '../domain/types'
 import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
@@ -43,7 +44,14 @@ export function Inspector() {
     if (!active?.fileHandle) return
     setExifDump('loading')
     try {
-      const bytes = await readFileBytes(active.fileHandle)
+      let bytes: ArrayBuffer | undefined
+      if (active.kind === 'video') {
+        // Large videos exceed what an ArrayBuffer can hold — a metadata-only
+        // copy (everything except the media payload) carries all tags.
+        const copy = await metadataOnlyCopy(await active.fileHandle.getFile())
+        if (copy) bytes = copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) as ArrayBuffer
+      }
+      bytes ??= await readFileBytes(active.fileHandle)
       const text = await exiftoolInspect(active.fileName, bytes)
       setExifDump({ fileName: active.fileName, text })
     } catch (err) {

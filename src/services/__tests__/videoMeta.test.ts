@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readVideoCaptureDate, readVideoMetadata } from '../exif/videoMeta'
+import { metadataOnlyCopy, readVideoCaptureDate, readVideoMetadata } from '../exif/videoMeta'
 import { extractMeta } from '../exif/readMeta'
 
 function box(type: string, body: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -77,6 +77,31 @@ describe('readVideoCaptureDate', () => {
     const blob = new Blob([concat(FTYP, box('moov', mvhd(Date.parse('1904-01-02T00:00:00Z'))))])
     expect(await readVideoCaptureDate(blob)).toBeUndefined()
     expect(await readVideoCaptureDate(new Blob([new Uint8Array(100)]))).toBeUndefined()
+  })
+})
+
+describe('metadataOnlyCopy', () => {
+  it('keeps every box except mdat and stays readable', async () => {
+    const iso = new TextEncoder().encode('+48.8581+002.2947/')
+    const xyzBody = new Uint8Array(4 + iso.length)
+    xyzBody[1] = iso.length
+    xyzBody.set(iso, 4)
+    const moov = box('moov', concat(mvhd(Date.parse('2026-07-04T17:30:00Z')), box('udta', box('©xyz', xyzBody))))
+    const uuid = box('uuid', new TextEncoder().encode('<CreationDate value="2026-07-04T12:30:00-05:00"/>'))
+    const mdat = box('mdat', new Uint8Array(500_000))
+    const full = concat(FTYP, uuid, mdat, moov)
+
+    const copy = await metadataOnlyCopy(new Blob([full]))
+    expect(copy).toBeDefined()
+    // The media payload is gone, the metadata is intact.
+    expect(copy!.length).toBeLessThan(full.length - 490_000)
+    const meta = await readVideoMetadata(new Blob([copy!]))
+    expect(meta.gps?.lat).toBeCloseTo(48.8581, 4)
+    expect(meta.date).toEqual({ wallClockMs: Date.UTC(2026, 6, 4, 12, 30, 0), tzOffsetMin: -300 })
+  })
+
+  it('returns undefined for non-MP4 garbage', async () => {
+    expect(await metadataOnlyCopy(new Blob([new Uint8Array(64)]))).toBeUndefined()
   })
 })
 

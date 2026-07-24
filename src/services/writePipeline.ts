@@ -300,6 +300,23 @@ async function writeSidecar(
   await writeFileBytes(handle, content)
 }
 
+/**
+ * Rewriting holds the file plus its rewritten copy in memory, and a single
+ * ArrayBuffer tops out around 2 GB — long clips can never fit. Fail fast
+ * with advice instead of a cryptic allocation error.
+ */
+const MAX_REWRITE_BYTES = 1_300_000_000
+
+async function assertRewritableSize(photo: Photo): Promise<void> {
+  if (photo.kind !== 'video' || !photo.fileHandle) return
+  const size = (await photo.fileHandle.getFile()).size
+  if (size > MAX_REWRITE_BYTES) {
+    throw new Error(
+      `Video too large to rewrite in the browser (${(size / 1e9).toFixed(1)} GB) — use Safe mode to store the position in an .xmp sidecar instead`
+    )
+  }
+}
+
 async function writeViaExiftool(
   photo: Photo,
   source: Source,
@@ -309,6 +326,7 @@ async function writeViaExiftool(
   dirs?: DirCache
 ): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
+  await assertRewritableSize(photo)
   const original = await readFileBytes(photo.fileHandle)
   // Worker verifies GPS round-trip and size sanity before returning.
   const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
@@ -362,6 +380,7 @@ export async function writeTimeOnlyPhoto(
 ): Promise<'exif' | 'sidecar'> {
   if (options.mode === 'exiftool' && photo.kind !== 'jpeg') {
     if (!photo.fileHandle) throw new Error('Missing file handle')
+    await assertRewritableSize(photo)
     const original = await readFileBytes(photo.fileHandle)
     const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')
     if (options.backupOriginals && source.dirHandle) {

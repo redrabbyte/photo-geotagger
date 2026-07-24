@@ -157,6 +157,61 @@ function gpsFromMoov(moov: Uint8Array): GeoPoint | undefined {
   return undefined
 }
 
+/**
+ * Metadata-only copy of an MP4/MOV: every top-level box except mdat, which
+ * is replaced by an empty `free` box. ExifTool reads all container metadata
+ * (moov, Sony's XML uuid, …) from it — without the multi-GB media payload
+ * that no ArrayBuffer could hold. Undefined when the structure is unusual
+ * or the metadata alone exceeds the limit; callers then fall back.
+ * (Timed metadata inside mdat — e.g. Sony rtmd per-frame tags — is absent
+ * from the copy by construction.)
+ */
+export async function metadataOnlyCopy(
+  blob: Blob,
+  limit = 64 * 1024 * 1024
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  const FREE_BOX = new Uint8Array([0, 0, 0, 8, 0x66, 0x72, 0x65, 0x65])
+  const parts: Uint8Array[] = []
+  let total = 0
+  let offset = 0
+  for (let guard = 0; guard < 64 && offset + 8 <= blob.size; guard++) {
+    const header = new DataView(await blob.slice(offset, Math.min(blob.size, offset + 16)).arrayBuffer())
+    if (header.byteLength < 8) return undefined
+    let size = header.getUint32(0)
+    const type = fourCC(header, 4)
+    let headerLen = 8
+    if (size === 1) {
+      if (header.byteLength < 16) return undefined
+      size = Number(header.getBigUint64(8))
+      headerLen = 16
+    } else if (size === 0) {
+      size = blob.size - offset
+    }
+    if (size < headerLen || offset + size > blob.size) return undefined
+    // Anything not starting with ftyp is not an MP4 worth slimming down.
+    if (offset === 0 && type !== 'ftyp') return undefined
+    if (type === 'mdat') {
+      parts.push(FREE_BOX)
+      total += FREE_BOX.length
+    } else {
+      if (total + size > limit) return undefined
+      parts.push(new Uint8Array(await blob.slice(offset, offset + size).arrayBuffer()))
+      total += size
+    }
+    offset += size
+    if (offset === blob.size) {
+      const out = new Uint8Array(total)
+      let o = 0
+      for (const p of parts) {
+        out.set(p, o)
+        o += p.length
+      }
+      return out
+    }
+  }
+  return undefined
+}
+
 /** Best available capture date + GPS of a video file. */
 export async function readVideoMetadata(blob: Blob): Promise<VideoMeta> {
   try {
