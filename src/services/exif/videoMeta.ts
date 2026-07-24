@@ -34,6 +34,15 @@ export interface VideoMeta {
 const SECONDS_1904_TO_1970 = 2_082_844_800
 const MOOV_READ_LIMIT = 8 * 1024 * 1024
 
+/** "±HH:MM" (EXIF OffsetTime), "±HHMM", or "Z" → minutes east of UTC. */
+export function parseTzOffsetMin(offset: unknown): number | undefined {
+  if (typeof offset !== 'string') return undefined
+  if (offset === 'Z') return 0
+  const m = /^([+-])(\d{2}):?(\d{2})$/.exec(offset)
+  if (!m) return undefined
+  return (m[1] === '-' ? -1 : 1) * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10))
+}
+
 /** Sony XML metadata sits within the first ~2 MB; binary noise around the
  * ASCII XML survives lossy UTF-8 decoding just fine for a regex. */
 async function sonyCreationDate(blob: Blob): Promise<VideoDate | undefined> {
@@ -51,14 +60,7 @@ async function sonyCreationDate(blob: Blob): Promise<VideoDate | undefined> {
     parseInt(m[5], 10),
     parseInt(m[6], 10)
   )
-  let tzOffsetMin: number | undefined
-  const tz = m[7]
-  if (tz === 'Z') tzOffsetMin = 0
-  else if (tz) {
-    const tm = /([+-])(\d{2}):?(\d{2})/.exec(tz)
-    if (tm) tzOffsetMin = (tm[1] === '-' ? -1 : 1) * (parseInt(tm[2], 10) * 60 + parseInt(tm[3], 10))
-  }
-  return { wallClockMs, tzOffsetMin }
+  return { wallClockMs, tzOffsetMin: parseTzOffsetMin(m[7]) }
 }
 
 function fourCC(view: DataView, offset: number): string {

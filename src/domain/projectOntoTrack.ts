@@ -7,7 +7,8 @@ export interface TrackProjection {
   t: number
   /** Squared distance in the projection plane (for comparisons only). */
   distSq: number
-  segmentIndex: number
+  /** Index of the trackpoint starting the polyline piece that was hit. */
+  pointIndex: number
 }
 
 /**
@@ -44,7 +45,7 @@ export function projectOntoTrack(track: Track, target: GeoPoint): TrackProjectio
           point: lerpPoint(a, b, f),
           t: a.t + (b.t - a.t) * f,
           distSq,
-          segmentIndex: i,
+          pointIndex: i,
         }
       }
     }
@@ -58,7 +59,7 @@ export function projectOntoTrack(track: Track, target: GeoPoint): TrackProjectio
           point: { lat: a.lat, lon: a.lon, ele: a.ele },
           t: a.t,
           distSq,
-          segmentIndex: seg.startIdx,
+          pointIndex: seg.startIdx,
         }
       }
     }

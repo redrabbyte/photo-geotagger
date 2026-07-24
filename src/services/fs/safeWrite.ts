@@ -30,15 +30,11 @@ export async function readFileBytes(handle: FileSystemFileHandle): Promise<Array
   return out.buffer
 }
 
-/**
- * Write bytes to a file handle. FSA's createWritable stages into a temp file
- * and commits atomically on close(), so a crash mid-write never corrupts the
- * original. Optionally copies the original to "<name>.orig" first.
- */
-export async function writeFileBytes(handle: FileSystemFileHandle, bytes: Uint8Array | string): Promise<void> {
+/** Stage one chunk via createWritable and commit; abort (discard) on failure. */
+async function writeThroughWritable(handle: FileSystemFileHandle, chunk: FileSystemWriteChunkType): Promise<void> {
   const writable = await handle.createWritable()
   try {
-    await writable.write(bytes as FileSystemWriteChunkType)
+    await writable.write(chunk)
     await writable.close()
   } catch (err) {
     try {
@@ -48,6 +44,15 @@ export async function writeFileBytes(handle: FileSystemFileHandle, bytes: Uint8A
     }
     throw err
   }
+}
+
+/**
+ * Write bytes to a file handle. FSA's createWritable stages into a temp file
+ * and commits atomically on close(), so a crash mid-write never corrupts the
+ * original.
+ */
+export async function writeFileBytes(handle: FileSystemFileHandle, bytes: Uint8Array | string): Promise<void> {
+  await writeThroughWritable(handle, bytes as FileSystemWriteChunkType)
 }
 
 /** Copy the original file to "<name>.orig" in the same directory (skip if it exists). */
@@ -65,17 +70,6 @@ export async function backupOriginal(
   const srcHandle = await dir.getFileHandle(fileName)
   const srcFile = await srcHandle.getFile()
   const dstHandle = await dir.getFileHandle(backupName, { create: true })
-  const writable = await dstHandle.createWritable()
-  try {
-    await writable.write(srcFile)
-    await writable.close()
-  } catch (err) {
-    try {
-      await writable.abort()
-    } catch {
-      // ignore
-    }
-    throw err
-  }
+  await writeThroughWritable(dstHandle, srcFile)
   return 'created'
 }

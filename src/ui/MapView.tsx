@@ -400,7 +400,7 @@ export function MapView() {
         const proj = projectOntoDraft(draft.points, { lat: e.lngLat.lat, lon: e.lngLat.lng })
         if (!proj) return
         e.preventDefault()
-        const newIndex = useStore.getState().insertDraftAutoAt(proj.segmentIndex, proj.point)
+        const newIndex = useStore.getState().insertDraftAutoAt(proj.pointIndex, proj.point)
         if (newIndex < 0) return
         beginDraftDrag(newIndex)
       }

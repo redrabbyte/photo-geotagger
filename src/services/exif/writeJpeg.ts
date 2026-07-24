@@ -57,6 +57,18 @@ export function formatTzOffset(min: number): string {
   return `${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
 }
 
+/** Set DateTimeOriginal/Digitized and their OffsetTime* tags on the Exif IFD. */
+function applyTimeTags(exifObj: ReturnType<typeof piexif.load>, time: TimeCorrection): void {
+  const exifIfd: Record<number, unknown> = exifObj['Exif'] ?? {}
+  const dateTime = formatExifDateTime(time.wallClockMs)
+  const tz = formatTzOffset(time.tzOffsetMin)
+  exifIfd[piexif.ExifIFD.DateTimeOriginal] = dateTime
+  exifIfd[piexif.ExifIFD.DateTimeDigitized] = dateTime
+  exifIfd[OFFSET_TIME_ORIGINAL] = tz
+  exifIfd[OFFSET_TIME_DIGITIZED] = tz
+  exifObj['Exif'] = exifIfd
+}
+
 /**
  * Insert GPS coordinates into a JPEG's EXIF, preserving all other metadata
  * and the image data (no recompression). Optionally rewrites the capture
@@ -71,16 +83,7 @@ export function insertGpsIntoJpeg(
   const dataStr = bufferToBinaryString(jpegBytes)
   const exifObj = piexif.load(dataStr)
 
-  if (timeCorrection) {
-    const exifIfd: Record<number, unknown> = exifObj['Exif'] ?? {}
-    const dateTime = formatExifDateTime(timeCorrection.wallClockMs)
-    const tz = formatTzOffset(timeCorrection.tzOffsetMin)
-    exifIfd[piexif.ExifIFD.DateTimeOriginal] = dateTime
-    exifIfd[piexif.ExifIFD.DateTimeDigitized] = dateTime
-    exifIfd[OFFSET_TIME_ORIGINAL] = tz
-    exifIfd[OFFSET_TIME_DIGITIZED] = tz
-    exifObj['Exif'] = exifIfd
-  }
+  if (timeCorrection) applyTimeTags(exifObj, timeCorrection)
 
   const gpsIfd: Record<number, unknown> = exifObj['GPS'] ?? {}
   gpsIfd[piexif.GPSIFD.GPSVersionID] = [2, 3, 0, 0]
@@ -113,14 +116,7 @@ export function insertGpsIntoJpeg(
 export function insertTimeIntoJpeg(jpegBytes: ArrayBuffer, time: TimeCorrection): Uint8Array {
   const dataStr = bufferToBinaryString(jpegBytes)
   const exifObj = piexif.load(dataStr)
-  const exifIfd: Record<number, unknown> = exifObj['Exif'] ?? {}
-  const dateTime = formatExifDateTime(time.wallClockMs)
-  const tz = formatTzOffset(time.tzOffsetMin)
-  exifIfd[piexif.ExifIFD.DateTimeOriginal] = dateTime
-  exifIfd[piexif.ExifIFD.DateTimeDigitized] = dateTime
-  exifIfd[OFFSET_TIME_ORIGINAL] = tz
-  exifIfd[OFFSET_TIME_DIGITIZED] = tz
-  exifObj['Exif'] = exifIfd
+  applyTimeTags(exifObj, time)
   const exifBytes = piexif.dump(exifObj)
   return binaryStringToBytes(piexif.insert(exifBytes, dataStr))
 }

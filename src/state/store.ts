@@ -40,6 +40,19 @@ import type { ImportFilters } from '../services/fs/sources'
 export const SOURCE_COLORS = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#76b7b2', '#edc948']
 export const TRACK_COLORS = ['#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22']
 
+/** Color for the next track, cycling by how many tracks exist. */
+function nextTrackColor(tracks: Record<string, unknown>, extra = 0): string {
+  return TRACK_COLORS[(Object.keys(tracks).length + extra) % TRACK_COLORS.length]
+}
+
+/** State patch that closes the track-draft editor. */
+const DRAFT_CLEARED = {
+  draft: undefined,
+  draftPlacement: undefined,
+  draftSelectedIndex: undefined,
+  draftAnchorIndex: undefined,
+} as const
+
 export interface Notice {
   id: number
   kind: 'info' | 'success' | 'error'
@@ -318,9 +331,9 @@ export const useStore = create<AppState>((set, get) => ({
   addTracks(tracks) {
     set((s) => {
       const map = { ...s.tracks }
-      let colorIdx = Object.keys(map).length
+      let added = 0
       for (const t of tracks) {
-        map[t.id] = t.color ? t : { ...t, color: TRACK_COLORS[colorIdx++ % TRACK_COLORS.length] }
+        map[t.id] = t.color ? t : { ...t, color: nextTrackColor(s.tracks, added++) }
       }
       return { tracks: map }
     })
@@ -712,7 +725,7 @@ export const useStore = create<AppState>((set, get) => ({
     const track = s.tracks[trackId]
     if (!track) return
     const id = nextTrackId()
-    const color = TRACK_COLORS[Object.keys(s.tracks).length % TRACK_COLORS.length]
+    const color = nextTrackColor(s.tracks)
     const copy = {
       ...track,
       id,
@@ -726,7 +739,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   cancelDraft() {
-    set({ draft: undefined, draftPlacement: undefined, draftSelectedIndex: undefined, draftAnchorIndex: undefined })
+    set(DRAFT_CLEARED)
   },
 
   commitDraft() {
@@ -741,24 +754,12 @@ export const useStore = create<AppState>((set, get) => ({
     if (draft.trackId && s.tracks[draft.trackId]) {
       const old = s.tracks[draft.trackId]
       const track = trackFromDraft({ ...draft, points }, old.id, old.color, old.fileName)
-      set({
-        tracks: { ...s.tracks, [old.id]: track },
-        draft: undefined,
-        draftPlacement: undefined,
-        draftSelectedIndex: undefined,
-        draftAnchorIndex: undefined,
-      })
+      set({ tracks: { ...s.tracks, [old.id]: track }, ...DRAFT_CLEARED })
     } else {
       const id = nextTrackId()
-      const color = TRACK_COLORS[Object.keys(s.tracks).length % TRACK_COLORS.length]
+      const color = nextTrackColor(s.tracks)
       const track = trackFromDraft({ ...draft, points }, id, color)
-      set({
-        tracks: { ...s.tracks, [id]: track },
-        draft: undefined,
-        draftPlacement: undefined,
-        draftSelectedIndex: undefined,
-        draftAnchorIndex: undefined,
-      })
+      set({ tracks: { ...s.tracks, [id]: track }, ...DRAFT_CLEARED })
     }
     return undefined
   },

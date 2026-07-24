@@ -22,6 +22,7 @@ import {
   type BatchWriteItem,
 } from '../services/exif/exiftoolRunner'
 import type { GeoPoint } from '../domain/types'
+import { formatExifDateTime } from '../services/exif/writeJpeg'
 
 // zeroperl detects "browser" as `typeof window/document !== 'undefined'`,
 // which is false in a Web Worker and sends it down a Node-only code path.
@@ -127,9 +128,11 @@ function tagsFor(
   return tags
 }
 
+/** exifr revives EXIF wall clocks in the machine's local zone — format the local fields. */
 function exifDateTimeOf(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}:${p(d.getMonth() + 1)}:${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return formatExifDateTime(
+    Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds())
+  )
 }
 
 async function verifyOutput(

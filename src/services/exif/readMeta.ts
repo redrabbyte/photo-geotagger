@@ -1,7 +1,7 @@
 import exifr from 'exifr'
 import type { PhotoMeta } from '../../domain/types'
 import { normalizeOrientation } from './orient'
-import { readVideoMetadata } from './videoMeta'
+import { parseTzOffsetMin, readVideoMetadata } from './videoMeta'
 
 // No `pick` filtering: it silently drops tags needed for derived values
 // (e.g. GPS*Ref, without which exifr loses the coordinate's hemisphere).
@@ -22,14 +22,6 @@ function wallClockMs(d: Date): number {
   return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds())
 }
 
-function parseTzOffsetMin(offset: unknown): number | undefined {
-  if (typeof offset !== 'string') return undefined
-  const m = offset.match(/^([+-])(\d{2}):(\d{2})$/)
-  if (!m) return undefined
-  const sign = m[1] === '-' ? -1 : 1
-  return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10))
-}
-
 /**
  * Extract photo metadata. Accepts a File (browsers/workers — exifr reads it
  * in chunks, important for large RAW files) or an ArrayBuffer (tests/Node,
@@ -43,8 +35,7 @@ export async function extractMeta(
   lastModified: number,
   kind?: string
 ): Promise<PhotoMeta> {
-  const isVideo = kind === 'video'
-  if (isVideo) {
+  if (kind === 'video') {
     // Sony XML metadata (CreationDateValue, with timezone) or QuickTime
     // mvhd creation_time — both read from tiny byte ranges, both beat mtime.
     // GPS comes from ©xyz / Keys ISO 6709 (what our own writer produces).
@@ -58,13 +49,13 @@ export async function extractMeta(
   }
   let exif: Record<string, unknown> | undefined
   try {
-    exif = isVideo ? undefined : await exifr.parse(input as Parameters<typeof exifr.parse>[0], EXIFR_OPTIONS)
+    exif = await exifr.parse(input as Parameters<typeof exifr.parse>[0], EXIFR_OPTIONS)
   } catch {
     exif = undefined
   }
   // Chunked File reading can fail on some platforms (e.g. Android SAF-backed
   // files); when nothing usable came back, retry once with the whole buffer.
-  if (!isVideo && (!exif || (!exif.DateTimeOriginal && exif.latitude === undefined)) && input instanceof File) {
+  if ((!exif || (!exif.DateTimeOriginal && exif.latitude === undefined)) && input instanceof File) {
     try {
       const full = await input.arrayBuffer()
       exif = (await exifr.parse(full, EXIFR_OPTIONS)) ?? exif

@@ -90,19 +90,22 @@ function queueUpdate(update: ScanUpdate): void {
   }
 }
 
+/** Flush queued updates immediately, cancelling any pending batched flush. */
+function flushNow(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  flushUpdates()
+}
+
 function getScanClient(): ScanClient {
   if (!scanClient) {
     scanClient = new ScanClient({
       onMeta: (id, meta, sizeBytes, lastModified) => {
         queueUpdate({ id, kind: 'meta', meta, sizeBytes, lastModified })
         // The user is looking at this photo right now: skip the batch delay.
-        if (urgentMetaIds.delete(id)) {
-          if (flushTimer) {
-            clearTimeout(flushTimer)
-            flushTimer = undefined
-          }
-          flushUpdates()
-        }
+        if (urgentMetaIds.delete(id)) flushNow()
       },
       onThumb: (id, url) => {
         // A priority request may have raced a queued one — if a thumb already
@@ -113,11 +116,7 @@ function getScanClient(): ScanClient {
         }
         // Thumbnails are on-demand and user-facing: show them immediately.
         queueUpdate({ id, kind: 'thumb', url })
-        if (flushTimer) {
-          clearTimeout(flushTimer)
-          flushTimer = undefined
-        }
-        flushUpdates()
+        flushNow()
       },
       onThumbFailed: (id) => queueUpdate({ id, kind: 'thumb-failed' }),
       onError: (id, message) => queueUpdate({ id, kind: 'error', message }),
@@ -207,11 +206,7 @@ async function pumpVideoThumbs(): Promise<void> {
         if (blob && !useStore.getState().photos[id]?.thumbUrl) {
           // User-facing like worker thumbs: show immediately, no batch delay.
           queueUpdate({ id, kind: 'thumb', url: URL.createObjectURL(blob) })
-          if (flushTimer) {
-            clearTimeout(flushTimer)
-            flushTimer = undefined
-          }
-          flushUpdates()
+          flushNow()
         }
       } catch {
         // undecodable (e.g. HEVC without hardware) — keep the placeholder
@@ -238,11 +233,6 @@ async function persistCurrentSources(): Promise<void> {
   )
 }
 
-/**
- * Fill in file sizes/mtimes in the background. getFile() is only a stat, but
- * on Android's SAF each call is slow — blocking ingestion on it made large
- * folders appear to do nothing at all. Results stream in as batched updates.
- */
 /**
  * Backfill size/mtime for photos whose metadata scan did not deliver them
  * (scan errors, unsupported content). Runs only AFTER the scan queue drains:
@@ -278,6 +268,40 @@ function statMissingInBackground(): void {
       statBackfillRunning = false
     }
   })()
+}
+
+/**
+ * Read one GPX file handle into tracks (the entry must already be in the
+ * pending-GPX list; it is removed here). Returns the tracks, or undefined
+ * after notifying about the failure.
+ */
+async function loadGpxHandle(handle: FileSystemFileHandle, displayName: string): Promise<Track[] | undefined> {
+  try {
+    const file = await handle.getFile()
+    const tracks = parseGpx(await file.text(), file.name, () => nextTrackId())
+    useStore.getState().addTracks(tracks)
+    return tracks
+  } catch (err) {
+    useStore
+      .getState()
+      .notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${displayName}`)
+    return undefined
+  } finally {
+    useStore.getState().removePendingGpx(displayName)
+  }
+}
+
+/** New source with the next palette color and the machine's timezone assumed. */
+function makeSource(name: string, dirHandle?: FileSystemDirectoryHandle): Source {
+  const existing = Object.keys(useStore.getState().sources).length
+  return {
+    id: nextSourceId(),
+    name: name || `Source ${existing + 1}`,
+    color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
+    clockOffsetMs: 0,
+    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
+    dirHandle,
+  }
 }
 
 /** Read paired .xmp sidecars and attach their GPS to the photos. */
@@ -335,15 +359,7 @@ async function ingestSource(source: Source): Promise<void> {
     // GPX files found inside the folder are loaded as tracks automatically.
     store.addPendingGpx(scan.gpxFiles.map((g) => g.name))
     for (const gpx of scan.gpxFiles) {
-      try {
-        const text = await (await gpx.handle.getFile()).text()
-        const tracks = parseGpx(text, gpx.name, () => nextTrackId())
-        useStore.getState().addTracks(tracks)
-      } catch (err) {
-        store.notify('error', err instanceof GpxParseError ? err.message : `Failed to load ${gpx.name}`)
-      } finally {
-        useStore.getState().removePendingGpx(gpx.name)
-      }
+      await loadGpxHandle(gpx.handle, gpx.name)
     }
 
     store.notify(
@@ -374,15 +390,7 @@ export async function addSourceFlow(): Promise<void> {
     store.notify('error', `Could not open folder: ${err instanceof Error ? err.message : String(err)}`)
     return
   }
-  const existing = Object.keys(store.sources).length
-  const source: Source = {
-    id: nextSourceId(),
-    name: dirHandle.name || `Source ${existing + 1}`,
-    color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
-    clockOffsetMs: 0,
-    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
-    dirHandle,
-  }
+  const source = makeSource(dirHandle.name, dirHandle)
   store.notify('info', `Reading "${source.name}"…`)
   try {
     await ingestSource(source)
@@ -425,14 +433,7 @@ export async function addFilesFlow(): Promise<void> {
   }
   if (handles.length === 0) return
 
-  const existing = Object.keys(store.sources).length
-  const source: Source = {
-    id: nextSourceId(),
-    name: handles.length === 1 ? handles[0].name : `${handles[0].name} +${handles.length - 1}`,
-    color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
-    clockOffsetMs: 0,
-    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
-  }
+  const source = makeSource(handles.length === 1 ? handles[0].name : `${handles[0].name} +${handles.length - 1}`)
   const photos: Photo[] = []
   let skipped = 0
   for (const h of handles) {
@@ -504,16 +505,10 @@ export async function addGpxFlow(): Promise<void> {
   store.addPendingGpx(handles.map((h) => h.name))
   const loaded: FileSystemFileHandle[] = []
   for (const handle of handles) {
-    try {
-      const file = await handle.getFile()
-      const tracks: Track[] = parseGpx(await file.text(), file.name, () => nextTrackId())
-      useStore.getState().addTracks(tracks)
+    const tracks = await loadGpxHandle(handle, handle.name)
+    if (tracks) {
       loaded.push(handle)
-      store.notify('success', `Loaded ${file.name}: ${tracks.reduce((n, t) => n + t.points.length, 0)} points`)
-    } catch (err) {
-      store.notify('error', err instanceof GpxParseError ? err.message : `Failed to parse ${handle.name}`)
-    } finally {
-      useStore.getState().removePendingGpx(handle.name)
+      store.notify('success', `Loaded ${handle.name}: ${tracks.reduce((n, t) => n + t.points.length, 0)} points`)
     }
   }
   if (loaded.length > 0) await rememberGpxHandles(loaded)
@@ -537,16 +532,8 @@ export async function listRestorableGpx(): Promise<RestorableGpx[]> {
         return
       }
       store.addPendingGpx([p.name])
-      try {
-        const file = await p.fileHandle.getFile()
-        const tracks = parseGpx(await file.text(), file.name, () => nextTrackId())
-        useStore.getState().addTracks(tracks)
-        store.notify('success', `Restored ${file.name}`)
-      } catch (err) {
-        store.notify('error', err instanceof GpxParseError ? err.message : `Failed to restore ${p.name}`)
-      } finally {
-        useStore.getState().removePendingGpx(p.name)
-      }
+      const tracks = await loadGpxHandle(p.fileHandle, p.name)
+      if (tracks) store.notify('success', `Restored ${p.name}`)
     },
   }))
 }
