@@ -331,8 +331,11 @@ export function Timeline() {
     if (hit === 'start' || hit === 'end') {
       const stretch = makeStretcher(hit)
       if (!stretch) return
+      // Body-level cursor: the pointer leaves the canvas mid-drag.
+      document.body.style.cursor = 'ew-resize'
       const onMove = (ev: MouseEvent) => stretch(ev.clientX - rect.left)
       const onUp = () => {
+        document.body.style.cursor = ''
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
       }
@@ -341,6 +344,7 @@ export function Timeline() {
       return
     }
     if (hit === 'middle') {
+      document.body.style.cursor = 'grabbing'
       let lastX = x
       const onMove = (ev: MouseEvent) => {
         const mx = ev.clientX - rect.left
@@ -348,6 +352,7 @@ export function Timeline() {
         lastX = mx
       }
       const onUp = () => {
+        document.body.style.cursor = ''
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
       }
@@ -459,9 +464,17 @@ export function Timeline() {
         onTouchEnd={onTouchEnd}
         onMouseMove={(e) => {
           const rect = canvasRef.current!.getBoundingClientRect()
-          setHoverX(e.clientX - rect.left)
+          const x = e.clientX - rect.left
+          setHoverX(x)
+          // Signal the draggable draft-bar zones (grab middle, stretch ends);
+          // '' falls back to the stylesheet's crosshair.
+          const hit = draftHit(x, e.clientY - rect.top)
+          canvasRef.current!.style.cursor = hit === 'middle' ? 'grab' : hit ? 'ew-resize' : ''
         }}
-        onMouseLeave={() => setHoverX(null)}
+        onMouseLeave={() => {
+          setHoverX(null)
+          if (canvasRef.current) canvasRef.current.style.cursor = ''
+        }}
         onDoubleClick={() => setView(null)}
         title={
           hoverX !== null && domain
