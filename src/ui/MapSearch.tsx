@@ -41,19 +41,25 @@ export function MapSearch() {
   const [results, setResults] = useState<SearchResult[]>([])
   const [status, setStatus] = useState<'idle' | 'busy' | 'error'>('idle')
   const inputRef = useRef<HTMLInputElement | null>(null)
+  // Setting the input to a picked result's label must not re-trigger the
+  // search — the dropdown would immediately reopen over the map.
+  const lastPickedRef = useRef<string>('')
 
   // Debounced as-you-type search (Photon is built for it; 450ms is polite).
   useEffect(() => {
     const q = query.trim()
-    if (q.length < 2) {
+    if (q.length < 2 || query === lastPickedRef.current) {
       setResults([])
       setStatus('idle')
       return
     }
+    const controller = new AbortController()
     const timer = setTimeout(async () => {
       setStatus('busy')
       try {
-        const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`)
+        const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`, {
+          signal: controller.signal,
+        })
         if (!res.ok) throw new Error(String(res.status))
         const json = (await res.json()) as { features?: PhotonFeature[] }
         setResults(
@@ -67,12 +73,17 @@ export function MapSearch() {
             .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon))
         )
         setStatus('idle')
-      } catch {
+      } catch (err) {
+        // A superseded request (new keystroke, unmount) is not a failure.
+        if (err instanceof DOMException && err.name === 'AbortError') return
         setResults([])
         setStatus('error')
       }
     }, 450)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
   }, [query])
 
   useEffect(() => {
@@ -82,6 +93,7 @@ export function MapSearch() {
   const pick = (r: SearchResult) => {
     useStore.getState().flyTo({ lat: r.lat, lon: r.lon }, zoomFor(r.extent))
     setResults([])
+    lastPickedRef.current = r.label
     setQuery(r.label)
   }
 
