@@ -251,7 +251,12 @@ export const useStore = create<AppState>((set, get) => ({
         else if (p.thumbUrl) URL.revokeObjectURL(p.thumbUrl)
       }
       const selectedIds = new Set([...s.selectedIds].filter((pid) => photos[pid]))
-      return { sources, photos, selectedIds }
+      // Drop every reference into the removed source, not just the selection.
+      const activePhotoId = s.activePhotoId && photos[s.activePhotoId] ? s.activePhotoId : undefined
+      const calibrate = s.calibrate?.sourceId === id ? undefined : s.calibrate
+      const placementIds = s.placement?.ids.filter((pid) => photos[pid]) ?? []
+      const placement = placementIds.length > 0 ? { ids: placementIds } : undefined
+      return { sources, photos, selectedIds, activePhotoId, calibrate, placement }
     })
   },
 
@@ -290,6 +295,8 @@ export const useStore = create<AppState>((set, get) => ({
             }
             break
           case 'thumb':
+            // A racing duplicate generation must not orphan the old blob URL.
+            if (p.thumbUrl && p.thumbUrl !== u.url) URL.revokeObjectURL(p.thumbUrl)
             photos[u.id] = { ...p, thumbUrl: u.url }
             break
           case 'thumb-failed':
@@ -342,8 +349,12 @@ export const useStore = create<AppState>((set, get) => ({
   toggleSelected(id, additive) {
     set((s) => {
       const next = additive ? new Set(s.selectedIds) : new Set<string>()
-      if (additive && next.has(id)) next.delete(id)
-      else next.add(id)
+      if (additive && next.has(id)) {
+        // Deselecting must not leave the deselected photo as the active one.
+        next.delete(id)
+        return { selectedIds: next, activePhotoId: s.activePhotoId === id ? undefined : s.activePhotoId }
+      }
+      next.add(id)
       return { selectedIds: next, activePhotoId: id }
     })
   },
@@ -380,7 +391,7 @@ export const useStore = create<AppState>((set, get) => ({
           : matchToTracks(photo, source, tracks, method, refs)
 
       if (result.ok) {
-        photos[id] = { ...photo, assignment: result.assignment, writeState: 'dirty' }
+        photos[id] = { ...photo, assignment: result.assignment, writeState: 'dirty', writeError: undefined }
         summary.assigned++
         if (result.assignment.degraded) summary.degraded++
       } else if (result.reason === 'no-time') {
@@ -413,7 +424,7 @@ export const useStore = create<AppState>((set, get) => ({
       const source = s.sources[p.sourceId]
       const t = source ? effectiveUtcMs(p, source) : undefined
       const assignment = manualAssignment(point, t, onTrackId ? { trackId: onTrackId } : undefined)
-      return { photos: { ...s.photos, [id]: { ...p, assignment, writeState: 'dirty' } } }
+      return { photos: { ...s.photos, [id]: { ...p, assignment, writeState: 'dirty', writeError: undefined } } }
     })
   },
 
