@@ -26,7 +26,6 @@ export function WriteBar() {
       ),
     [photos, embedActive]
   )
-  const dirtyRaw = dirty.filter((p) => p.kind !== 'jpeg').length
   const sidecarEmbedCount = useMemo(
     () => Object.values(photos).filter((p) => p.sidecarGps !== undefined && !p.assignment && p.writeState !== 'written').length,
     [photos]
@@ -43,17 +42,20 @@ export function WriteBar() {
   )
   const writing = writeProgress !== undefined
 
-  // With an active selection, the time fix applies to the selected files only.
-  const timeFixSelected = selectedIds.size > 0
-  const timeFixShown = timeFixSelected ? timeFix.filter((p) => selectedIds.has(p.id)) : timeFix
-  const timeOnlyIds = timeFixSelected ? timeFixShown.map((p) => p.id) : undefined
+  // With an active selection, both write buttons apply to the selection only.
+  const hasSelection = selectedIds.size > 0
+  const timeFixShown = hasSelection ? timeFix.filter((p) => selectedIds.has(p.id)) : timeFix
+  const timeOnlyIds = hasSelection ? timeFixShown.map((p) => p.id) : undefined
+  const gpsShown = hasSelection ? dirty.filter((p) => selectedIds.has(p.id)) : dirty
+  const gpsOnlyIds = hasSelection ? gpsShown.map((p) => p.id) : undefined
+  const dirtyRaw = gpsShown.filter((p) => p.kind !== 'jpeg').length
 
-  const flowTargets = (flow: 'gps' | 'time') => (flow === 'gps' ? dirty : timeFixShown)
+  const flowTargets = (flow: 'gps' | 'time') => (flow === 'gps' ? gpsShown : timeFixShown)
   // Files whose GPS Android stripped on read: writing bakes the stripped copy in.
   const strippedIn = (flow: 'gps' | 'time') => flowTargets(flow).filter((p) => p.meta?.gpsEmpty)
 
   const runFlow = (flow: 'gps' | 'time', onlyIds?: string[]) => {
-    if (flow === 'gps') void writeDirtyFlow(onlyIds)
+    if (flow === 'gps') void writeDirtyFlow(onlyIds ?? gpsOnlyIds)
     else void writeTimesFlow(onlyIds ?? timeOnlyIds)
   }
 
@@ -166,27 +168,35 @@ export function WriteBar() {
           {timeFixShown.length > 0 && (
             <button
               title={
-                timeFixSelected
+                hasSelection
                   ? 'Write ONLY the corrected capture time (clock offset + timezone) into the SELECTED files that need it. Clear the selection to target every file.'
                   : 'Write ONLY the corrected capture time (clock offset + timezone) into every file that needs it — also files without a GPS position. GPS assignments are not written by this button.'
               }
               onClick={() => startWrite('time')}
             >
               Fix times in {timeFixShown.length}
-              {timeFixSelected ? ' selected' : ''} file{timeFixShown.length === 1 ? '' : 's'}
+              {hasSelection ? ' selected' : ''} file{timeFixShown.length === 1 ? '' : 's'}
             </button>
           )}
           <button
             className="primary"
-            disabled={dirty.length === 0}
+            disabled={gpsShown.length === 0}
             title={
-              settings.writeMode === 'safe' && dirtyRaw > 0
-                ? `${dirtyRaw} RAW/HEIC/video file(s) will get .xmp sidecars`
-                : undefined
+              [
+                hasSelection
+                  ? `Writes the SELECTED files only (${dirty.length} unsaved in total) — clear the selection to write all of them.`
+                  : undefined,
+                settings.writeMode === 'safe' && dirtyRaw > 0
+                  ? `${dirtyRaw} RAW/HEIC/video file(s) will get .xmp sidecars`
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join('\n') || undefined
             }
             onClick={() => startWrite('gps')}
           >
-            Write GPS to {dirty.length} file{dirty.length === 1 ? '' : 's'}
+            Write GPS to {gpsShown.length}
+            {hasSelection ? ' selected' : ''} file{gpsShown.length === 1 ? '' : 's'}
           </button>
         </>
       )}
