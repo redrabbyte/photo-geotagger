@@ -466,13 +466,19 @@ async function runWriteJobs(
   const queue = [...photos].sort((a, b) => Number(a.kind === 'video') - Number(b.kind === 'video'))
   let completed = 0
   const workerCount = Math.max(1, Math.min(options.concurrency ?? 1, photos.length))
+  // At most one video in flight — but only when rewriting it in place: each
+  // ExifTool run holds the whole file plus its rewritten copy in WASM memory,
+  // so concurrency would multiply the footprint. Safe mode only writes a small
+  // .xmp sidecar next to the video, which carries no such risk.
+  const serializeVideos = options.mode === 'exiftool'
   // Per-file-class service times keep mixed JPEG/RAW batches from whipsawing
-  // the ETA; dividing by the worker count keeps parallel bursts from doing so.
-  const eta = makeBatchEtaEstimator(workerCount)
+  // the ETA; dividing by the worker count keeps parallel bursts from doing so —
+  // except for classes the loop below runs strictly one at a time.
+  const eta = makeBatchEtaEstimator(workerCount, {
+    serialKinds: serializeVideos ? new Set(['video']) : undefined,
+  })
   const remainingByKind: Record<string, number> = {}
   for (const p of photos) remainingByKind[etaKind(p)] = (remainingByKind[etaKind(p)] ?? 0) + 1
-  // At most one video in flight: each one holds the whole file (plus its
-  // rewritten copy) in memory, so concurrency would multiply the footprint.
   let videoTurn: Promise<void> = Promise.resolve()
 
   const workers = Array.from({ length: workerCount }, async () => {
@@ -494,7 +500,7 @@ async function runWriteJobs(
         return result
       }
       let result: WriteJobResult
-      if (photo.kind === 'video') {
+      if (photo.kind === 'video' && serializeVideos) {
         const previous = videoTurn
         let release!: () => void
         videoTurn = new Promise((resolve) => (release = resolve))

@@ -55,6 +55,20 @@ describe('makeBatchEtaEstimator', () => {
     expect(eta.estimate({ raw: 2 })).toBeCloseTo((2 * 5000) / 2, -2)
   })
 
+  it('does not divide serial classes by the worker count', () => {
+    // Videos run one at a time in ExifTool mode: their remaining work is the
+    // full sum, while parallel classes still share the workers.
+    const eta = makeBatchEtaEstimator(4, { serialKinds: new Set(['video']) })
+    eta.record('raw', 4000)
+    eta.record('video', 20_000)
+    expect(eta.estimate({ video: 3 })).toBeCloseTo(60_000, -2)
+    expect(eta.estimate({ raw: 4, video: 2 })).toBeCloseTo(40_000 + 4000, -2)
+    // Without the exemption the same videos would look 4× faster.
+    const parallel = makeBatchEtaEstimator(4)
+    parallel.record('video', 20_000)
+    expect(parallel.estimate({ video: 3 })).toBeCloseTo(20_000, -2)
+  })
+
   it('falls back to the global rate for classes without samples', () => {
     const eta = makeBatchEtaEstimator(1)
     eta.record('jpeg', 300)

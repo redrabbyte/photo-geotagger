@@ -39,10 +39,8 @@ describe('video handling', () => {
     expect(order).toEqual(['a', 'b', 'v1', 'v2'])
   })
 
-  it('runs at most one video write at a time even with concurrency 3', async () => {
-    // Safe mode sends videos down the sidecar path; a mock folder handle that
-    // dawdles inside createWritable exposes how many run simultaneously.
-    const gauge = { active: 0, max: 0 }
+  /** Folder handle whose sidecar write dawdles, counting simultaneous writes. */
+  function gaugedSidecarSource(gauge: { active: number; max: number }): Source {
     const dirHandle = {
       getFileHandle: async (_name: string, opts?: { create?: boolean }) => {
         if (!opts?.create) throw new DOMException('no sidecar yet', 'NotFoundError')
@@ -60,14 +58,43 @@ describe('video handling', () => {
         }
       },
     } as unknown as FileSystemDirectoryHandle
-    const source: Source = {
-      id: 'src',
-      name: 'cam',
-      color: '#000',
-      clockOffsetMs: 0,
-      assumedTzOffsetMin: 0,
-      dirHandle,
-    }
+    return { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, assumedTzOffsetMin: 0, dirHandle }
+  }
+
+  function gaugedVideos(gauge: { active: number; max: number }): Photo[] {
+    // In ExifTool mode the first thing a video write does is stat the file
+    // (the size limit check), so the gauge sits in getFile.
+    const fileHandle = {
+      getFile: async () => {
+        gauge.active++
+        gauge.max = Math.max(gauge.max, gauge.active)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        gauge.active--
+        return { size: 1000, arrayBuffer: async () => new ArrayBuffer(1000) }
+      },
+    } as unknown as FileSystemFileHandle
+    return ['v1', 'v2', 'v3'].map((id) => ({ ...makePhoto(id, 'video'), sourceId: 'src', fileHandle }))
+  }
+
+  it('runs at most one video write at a time in ExifTool mode', async () => {
+    const gauge = { active: 0, max: 0 }
+    const source = gaugedSidecarSource(gauge)
+    // The ExifTool run itself cannot work in this environment — the jobs fail
+    // after the stat, which is exactly where the gauge measures overlap.
+    await writeBatch(
+      gaugedVideos(gauge),
+      new Map([['src', source]]),
+      { mode: 'exiftool', backupOriginals: false, concurrency: 3 },
+      () => {}
+    )
+    expect(gauge.max).toBe(1)
+  })
+
+  it('writes sidecar videos in parallel in safe mode', async () => {
+    // Safe mode only drops an .xmp next to the video — no WASM memory is held,
+    // so throttling to one at a time would waste the other workers.
+    const gauge = { active: 0, max: 0 }
+    const source = gaugedSidecarSource(gauge)
     const videos = ['v1', 'v2', 'v3'].map((id) => ({ ...makePhoto(id, 'video'), sourceId: 'src' }))
     const results = await writeBatch(
       videos,
@@ -76,6 +103,6 @@ describe('video handling', () => {
       () => {}
     )
     expect(results.every((r) => r.ok)).toBe(true)
-    expect(gauge.max).toBe(1)
+    expect(gauge.max).toBeGreaterThan(1)
   })
 })

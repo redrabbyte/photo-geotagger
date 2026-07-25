@@ -14,6 +14,11 @@
  * batch factor (all files of a batch finish after the whole run), and the
  * division by concurrency cancels exactly that — the projection stays
  * consistent for serial, parallel, and batched execution alike.
+ *
+ * Classes named in `serialKinds` are exempt from that division: the pipeline
+ * runs them one at a time (videos in ExifTool mode hold whole files in WASM
+ * memory), so dividing their work by the worker count would under-report the
+ * tail of a batch by up to the full concurrency factor.
  */
 export interface BatchEtaEstimator {
   /** Feed one completed file's class and measured duration. */
@@ -22,7 +27,11 @@ export interface BatchEtaEstimator {
   estimate(remaining: Record<string, number>): number | undefined
 }
 
-export function makeBatchEtaEstimator(concurrency: number, alpha = 0.3): BatchEtaEstimator {
+export function makeBatchEtaEstimator(
+  concurrency: number,
+  options: { serialKinds?: ReadonlySet<string>; alpha?: number } = {}
+): BatchEtaEstimator {
+  const { serialKinds, alpha = 0.3 } = options
   const rateByKind = new Map<string, number>()
   /** Fallback for classes without a sample yet (e.g. RAWs before the first finishes). */
   let globalRate: number | undefined
@@ -35,17 +44,21 @@ export function makeBatchEtaEstimator(concurrency: number, alpha = 0.3): BatchEt
     },
 
     estimate(remaining) {
-      let totalMs = 0
+      let parallelMs = 0
+      let serialMs = 0
       let count = 0
       for (const [kind, n] of Object.entries(remaining)) {
         if (n <= 0) continue
         const rate = rateByKind.get(kind) ?? globalRate
         if (rate === undefined) return undefined
-        totalMs += rate * n
-        count += n
+        if (serialKinds?.has(kind)) serialMs += rate * n
+        else {
+          parallelMs += rate * n
+          count += n
+        }
       }
-      if (count === 0) return 0
-      return totalMs / Math.max(1, Math.min(concurrency, count))
+      if (count === 0 && serialMs === 0) return 0
+      return serialMs + parallelMs / Math.max(1, Math.min(concurrency, count))
     },
   }
 }
