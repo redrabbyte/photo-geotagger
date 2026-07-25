@@ -270,12 +270,26 @@ export function MapView() {
       const isMultiTouch = (e: PointerEv) =>
         'touches' in e.originalEvent && e.originalEvent.touches.length > 1
 
-      let dragging: { id: string } | undefined
+      /**
+       * A drag only counts once the pointer has travelled this far, so a click
+       * with a few pixels of hand jitter selects a photo instead of silently
+       * repositioning it. Fingers wobble more than mice.
+       */
+      const dragThreshold = (e: PointerEv) => ('touches' in e.originalEvent ? 8 : 4)
+      const movedFarEnough = (e: PointerEv, start: maplibregl.Point) =>
+        Math.hypot(e.point.x - start.x, e.point.y - start.y) >= dragThreshold(e)
+
+      let dragging: { id: string; start: maplibregl.Point; moved: boolean } | undefined
       let lastDragLngLat: GeoPoint | undefined
       const dragPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 14 })
 
       const onMove = (e: PointerEv) => {
         if (!dragging || isMultiTouch(e)) return
+        // Below the threshold nothing moves at all — not even the preview.
+        if (!dragging.moved) {
+          if (!movedFarEnough(e, dragging.start)) return
+          dragging.moved = true
+        }
         const snap = useStore.getState().snapToTrack
         let pos: GeoPoint = { lat: e.lngLat.lat, lon: e.lngLat.lng }
         lastDragLngLat = pos
@@ -311,6 +325,7 @@ export function MapView() {
       const onUp = (e: PointerEv) => {
         if (!dragging) return
         const id = dragging.id
+        const moved = dragging.moved
         dragging = undefined
         map.off('mousemove', onMove)
         map.off('touchmove', onMove)
@@ -319,6 +334,13 @@ export function MapView() {
         map.off('touchcancel', onUp)
         dragPopup.remove()
         map.dragPan.enable()
+        dragPositions.delete(id)
+        // A click (no real movement) must not touch the photo's position —
+        // the layer's own click handler selects it instead.
+        if (!moved) {
+          refreshRef.current()
+          return
+        }
         const store = useStore.getState()
         const snap = store.snapToTrack
         let pos: GeoPoint = e.lngLat
@@ -332,7 +354,6 @@ export function MapView() {
             trackId = proj.trackId
           }
         }
-        dragPositions.delete(id)
         store.setManualPosition(id, pos, trackId)
       }
 
@@ -343,7 +364,7 @@ export function MapView() {
         const id = feature?.properties?.id as string | undefined
         if (!id) return
         e.preventDefault()
-        dragging = { id }
+        dragging = { id, start: e.point, moved: false }
         lastDragLngLat = { lat: e.lngLat.lat, lon: e.lngLat.lng }
         map.dragPan.disable()
         map.on('mousemove', onMove)
@@ -356,14 +377,19 @@ export function MapView() {
       map.on('touchstart', 'photos-circle', startPhotoDrag)
 
       // --- draft editing: drag points; drag the line to insert a point ---
-      let draggingDraftIndex: number | undefined
+      let draggingDraft: { index: number; start: maplibregl.Point; moved: boolean } | undefined
 
       const onDraftMove = (e: PointerEv) => {
-        if (draggingDraftIndex === undefined || isMultiTouch(e)) return
-        useStore.getState().moveDraftPointAt(draggingDraftIndex, { lat: e.lngLat.lat, lon: e.lngLat.lng })
+        if (!draggingDraft || isMultiTouch(e)) return
+        // Same jitter tolerance as photo points: a click selects, it doesn't move.
+        if (!draggingDraft.moved) {
+          if (!movedFarEnough(e, draggingDraft.start)) return
+          draggingDraft.moved = true
+        }
+        useStore.getState().moveDraftPointAt(draggingDraft.index, { lat: e.lngLat.lat, lon: e.lngLat.lng })
       }
       const onDraftUp = () => {
-        draggingDraftIndex = undefined
+        draggingDraft = undefined
         map.off('mousemove', onDraftMove)
         map.off('touchmove', onDraftMove)
         map.off('mouseup', onDraftUp)
@@ -371,8 +397,8 @@ export function MapView() {
         map.off('touchcancel', onDraftUp)
         map.dragPan.enable()
       }
-      const beginDraftDrag = (index: number) => {
-        draggingDraftIndex = index
+      const beginDraftDrag = (index: number, start: maplibregl.Point, moved = false) => {
+        draggingDraft = { index, start, moved }
         map.dragPan.disable()
         map.on('mousemove', onDraftMove)
         map.on('touchmove', onDraftMove)
@@ -387,7 +413,7 @@ export function MapView() {
         if (typeof idx !== 'number') return
         e.preventDefault()
         useStore.getState().selectDraftPoint(idx)
-        beginDraftDrag(idx)
+        beginDraftDrag(idx, e.point)
       }
       map.on('mousedown', 'draft-points', startDraftPointDrag)
       map.on('touchstart', 'draft-points', startDraftPointDrag)
@@ -402,7 +428,8 @@ export function MapView() {
         e.preventDefault()
         const newIndex = useStore.getState().insertDraftAutoAt(proj.pointIndex, proj.point)
         if (newIndex < 0) return
-        beginDraftDrag(newIndex)
+        // The point was just inserted deliberately — drag it without a threshold.
+        beginDraftDrag(newIndex, e.point, true)
       }
       map.on('mousedown', 'draft-line', startDraftLineDrag)
       map.on('touchstart', 'draft-line', startDraftLineDrag)
