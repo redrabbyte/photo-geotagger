@@ -453,6 +453,16 @@ function etaKind(photo: Photo): string {
   return photo.kind === 'jpeg' ? 'jpeg' : photo.kind === 'video' ? 'video' : 'raw'
 }
 
+/**
+ * Relative per-file cost per ETA class, used until a class has measured itself.
+ * ExifTool mode: a JPEG is pure JS (~50 ms), a RAW is a whole WASM run (~2 s),
+ * a video is that over hundreds of megabytes (~20 s). Safe mode only rewrites
+ * JPEGs; everything else gets a small sidecar written next to it.
+ */
+function etaPriors(mode: WriteMode): Record<string, number> {
+  return mode === 'exiftool' ? { jpeg: 1, raw: 25, video: 250 } : { jpeg: 2, raw: 1, video: 1 }
+}
+
 /** Run per-photo write jobs with bounded concurrency, preserving reporting. */
 async function runWriteJobs(
   photos: Photo[],
@@ -476,6 +486,7 @@ async function runWriteJobs(
   // except for classes the loop below runs strictly one at a time.
   const eta = makeBatchEtaEstimator(workerCount, {
     serialKinds: serializeVideos ? new Set(['video']) : undefined,
+    priors: etaPriors(options.mode),
   })
   const remainingByKind: Record<string, number> = {}
   for (const p of photos) remainingByKind[etaKind(p)] = (remainingByKind[etaKind(p)] ?? 0) + 1
@@ -489,14 +500,19 @@ async function runWriteJobs(
       if (!photo) return
       const runJob = async (): Promise<WriteJobResult> => {
         options.onProgress?.(completed, photos.length, photo.fileName, eta.estimate(remainingByKind))
-        const startedAt = Date.now()
+        let startedAt = Date.now()
         let result = await job(photo)
         if (!result.ok && result.error && isRecoverableWriteError(result.error)) {
           // The worker rebuilt its interpreter (or the crashed pool will be
-          // recreated) — the file is untouched, so one retry is safe.
+          // recreated) — the file is untouched, so one retry is safe. Time the
+          // retry alone; the failed attempt is not a service time.
+          startedAt = Date.now()
           result = await job(photo)
         }
-        eta.record(etaKind(photo), Date.now() - startedAt)
+        // Only successful writes are representative: a file rejected up front
+        // (unknown source, nothing to correct) returns in ~0 ms and would drag
+        // the projection for the files still queued down with it.
+        if (result.ok) eta.record(etaKind(photo), Date.now() - startedAt)
         return result
       }
       let result: WriteJobResult
