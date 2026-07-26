@@ -8,8 +8,8 @@ entirely in the browser.
 ## Disclaimer
 
 100% vibe coded.
-All features tested with my holiday photo collection of mobile jpgs, mp4s and sony raws.  
-Tested in Android and Windows Chrome. No guarantees elsewhere :D
+All features tested with my holiday photo collection of mobile jpgs, mp4s and Sony raws with normal and fast mode.  
+Tested in Chrome on Android and Windows. No guarantees else- (or any-) where :D
 
 ## What it does
 
@@ -139,7 +139,7 @@ src/
               batched ExifTool, IndexedDB handle persistence
   workers/    scan.worker (exifr metadata + thumbnails, pooled),
               exiftool.worker (zeroperl WASM, pooled, request coalescing)
-  state/      zustand store (persisted settings)
+  state/      state store (persisted settings)
   ui/         MapView, MapSearch, Timeline, Filmstrip, Inspector,
               TrackEditorPanel, SourcesPanel, WriteBar, LimitsDialog
 patches/      zeroperl's fd_write, fixed to grow geometrically (see below)
