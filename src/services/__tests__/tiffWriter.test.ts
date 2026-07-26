@@ -9,21 +9,42 @@ const asBuffer = (b: Uint8Array): ArrayBuffer => b.buffer as ArrayBuffer
 describe('rewriteTiffMetadata', () => {
   const gps = { lat: 48.8581, lon: 2.2947, ele: 35 }
 
-  it('adds a GPS IFD by appending and repointing IFD0', async () => {
+  it('adds GPS without moving IFD0 or any existing byte outside its table', async () => {
     const original = makeTiff()
     const rewritten = rewriteTiffMetadata(asBuffer(original), { gps })
+    const u16 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint16(o, true)
+    const u32 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint32(o, true)
 
-    // Every original byte except the 4-byte IFD0 pointer is untouched.
-    const stripAt = original.length - 26
-    expect(rewritten.slice(stripAt, original.length)).toEqual(original.slice(stripAt))
-    expect(rewritten.slice(8, original.length)).toEqual(original.slice(8))
+    // A gallery app's RAW decoder parses the front of the file: IFD0 must stay
+    // exactly where the camera put it.
+    expect(u32(rewritten, 4)).toBe(u32(original, 4))
+    const ifd0 = u32(original, 4)
+    // The table grew by one record; everything from there on is untouched.
+    const grownTableEnd = ifd0 + 2 + (u16(original, ifd0) + 1) * 12 + 4
+    expect(rewritten.slice(0, ifd0)).toEqual(original.slice(0, ifd0))
+    expect(rewritten.slice(grownTableEnd, original.length)).toEqual(original.slice(grownTableEnd))
+    // Entries stay in ascending tag order (readers may binary-search them).
+    const count = u16(rewritten, ifd0)
+    const tags = Array.from({ length: count }, (_, i) => u16(rewritten, ifd0 + 2 + i * 12))
+    expect(tags).toEqual([...tags].sort((a, z) => a - z))
+    expect(tags).toContain(0x8825)
 
     const parsed = await exifr.parse(asBuffer(rewritten), { tiff: true, gps: true, exif: true })
     expect(parsed.latitude).toBeCloseTo(gps.lat, 4)
     expect(parsed.longitude).toBeCloseTo(gps.lon, 4)
     expect(parsed.GPSAltitude).toBeCloseTo(35, 1)
-    // Untouched capture time still parses.
     expect(parsed.DateTimeOriginal).toBeInstanceOf(Date)
+  })
+
+  it('falls back instead of moving data when IFD0 has no room to grow', () => {
+    // Tightly packed IFD0 (no padding behind the table) — ExifTool must take
+    // over rather than this writer relocating anything.
+    const packed = makeTiff({ ifd0Padding: 0 })
+    expect(() => rewriteTiffMetadata(asBuffer(packed), { gps })).toThrow(TiffStructureError)
+    // A time-only correction still works: those values are patched in place.
+    expect(() =>
+      rewriteTiffMetadata(asBuffer(packed), { time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0), tzOffsetMin: -300 } })
+    ).not.toThrow()
   })
 
   it('replaces an existing GPS pointer without growing IFD0 again', async () => {
@@ -64,12 +85,12 @@ describe('rewriteTiffMetadata', () => {
   })
 
   /**
-   * The regression that shipped GPS-less RAWs: chunked readers (exifr, used by
-   * the app's own import) fetch a window around the offset they seek to, so
-   * anything the new IFD0 references must lie AFTER it. A full-buffer parse
-   * cannot catch a violation — this checks the layout itself.
+   * Two regressions guarded here. Relocating IFD0 to the end of the file broke
+   * RAW display in gallery apps that parse only the front; leaving GPS values
+   * reachable only through a far pointer broke reading them back. So: IFD0 keeps
+   * its offset, and everything appended is self-contained behind its own table.
    */
-  it('keeps every new offset in one forward window starting at the relocated IFD0', () => {
+  it('never relocates IFD0 and keeps appended values behind their table', () => {
     const u16 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint16(o, true)
     const u32 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint32(o, true)
 
@@ -80,37 +101,30 @@ describe('rewriteTiffMetadata', () => {
     ]) {
       const original = makeTiff()
       const out = rewriteTiffMetadata(asBuffer(original), edit)
-      const ifd0Offset = u32(out, 4)
-      // IFD0 was relocated into the appended block.
-      expect(ifd0Offset).toBeGreaterThanOrEqual(original.length)
+      const ifd0 = u32(out, 4)
+      expect(ifd0).toBe(u32(original, 4))
+      expect(ifd0).toBeLessThan(original.length)
 
-      const count = u16(out, ifd0Offset)
-      const pointers: number[] = []
+      // Every IFD the new file points into must have its own values behind its
+      // table, so one forward read from that IFD covers them.
+      const count = u16(out, ifd0)
       for (let i = 0; i < count; i++) {
-        const rec = ifd0Offset + 2 + i * 12
+        const rec = ifd0 + 2 + i * 12
         const tag = u16(out, rec)
-        // GPSInfo / ExifIFD pointers, and every GPS value offset behind them.
-        if (tag === 0x8825 || tag === 0x8769) {
-          const target = u32(out, rec + 8)
-          if (target >= original.length) {
-            pointers.push(target)
-            const subCount = u16(out, target)
-            for (let j = 0; j < subCount; j++) {
-              const subRec = target + 2 + j * 12
-              const subCountVal = u32(out, subRec + 4)
-              const type = u16(out, subRec + 2)
-              const size = subCountVal * (type === 5 ? 8 : type === 4 ? 4 : 1)
-              if (size > 4) pointers.push(u32(out, subRec + 8))
-            }
-          }
+        if (tag !== 0x8825 && tag !== 0x8769) continue
+        const target = u32(out, rec + 8)
+        if (target < original.length) continue // untouched front-region IFD
+        const subCount = u16(out, target)
+        for (let j = 0; j < subCount; j++) {
+          const subRec = target + 2 + j * 12
+          const type = u16(out, subRec + 2)
+          const size = u32(out, subRec + 4) * (type === 5 ? 8 : type === 4 ? 4 : 1)
+          if (size <= 4) continue
+          const valueAt = u32(out, subRec + 8)
+          // Either an original value left in place, or one behind this table.
+          expect(valueAt < original.length || valueAt > target).toBe(true)
         }
       }
-      expect(pointers.length).toBeGreaterThan(0)
-      // Either in the original front region (covered by the reader's first
-      // chunk) or in the forward window — never stranded in between, which is
-      // what a GPS IFD appended before the new IFD0 used to be.
-      const stranded = pointers.filter((p) => p >= original.length && p < ifd0Offset)
-      expect(stranded).toEqual([])
     }
   })
 

@@ -14,7 +14,7 @@ import { isFatalWasmError } from './exif/exiftoolRunner'
 import { backupOriginal, readFileBytes, writeFileBytes, writeFileParts } from './fs/safeWrite'
 import { Mp4StructureError, rewriteMp4Metadata } from './exif/mp4Writer'
 import { TiffStructureError, rewriteTiffMetadata } from './exif/tiffWriter'
-import { EXIFR_OPTIONS } from './exif/readMeta'
+import { extractMeta } from './exif/readMeta'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
@@ -424,36 +424,17 @@ async function tryWriteRawFast(
     if (err instanceof TiffStructureError) return false
     throw err
   }
-  // Verify the way the app's import actually reads a RAW: chunked, from a
-  // File. A full-buffer parse would happily find metadata that a chunked
-  // reader never reaches, and the file would come back without coordinates.
-  let parsed: Record<string, unknown> | undefined
-  try {
-    parsed = await exifr.parse(new File([rewritten as BlobPart], photo.fileName), EXIFR_OPTIONS)
-  } catch {
-    parsed = undefined
-  }
+  // Verify through the app's own import path — the same chunked EXIF parse plus
+  // targeted GPS-pointer read that will run when this folder is reloaded. A
+  // full-buffer parse would happily find metadata that the import never sees.
+  const meta = await extractMeta(new File([rewritten as BlobPart], photo.fileName), 0, photo.kind)
   if (gps) {
-    const lat = parsed?.latitude
-    const lon = parsed?.longitude
-    if (
-      typeof lat !== 'number' ||
-      typeof lon !== 'number' ||
-      Math.abs(lat - gps.lat) > 1e-4 ||
-      Math.abs(lon - gps.lon) > 1e-4
-    ) {
+    const back = meta.originalGps
+    if (!back || Math.abs(back.lat - gps.lat) > 1e-4 || Math.abs(back.lon - gps.lon) > 1e-4) {
       return false
     }
   }
-  if (time) {
-    const dto = parsed?.DateTimeOriginal
-    if (!(dto instanceof Date)) return false
-    const wallClock = Date.UTC(
-      dto.getFullYear(), dto.getMonth(), dto.getDate(),
-      dto.getHours(), dto.getMinutes(), dto.getSeconds()
-    )
-    if (Math.abs(wallClock - time.wallClockMs) > 1000) return false
-  }
+  if (time && Math.abs(meta.captureLocalMs - time.wallClockMs) > 1000) return false
   await backupThenWrite(photo, source, rewritten, backup, dirs)
   return true
 }

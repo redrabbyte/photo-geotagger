@@ -6,7 +6,7 @@ import { readTiffGps } from './tiffReader'
 
 // No `pick` filtering: it silently drops tags needed for derived values
 // (e.g. GPS*Ref, without which exifr loses the coordinate's hemisphere).
-export const EXIFR_OPTIONS: NonNullable<Parameters<typeof exifr.parse>[1]> = {
+const EXIFR_OPTIONS: NonNullable<Parameters<typeof exifr.parse>[1]> = {
   tiff: true,
   exif: true,
   gps: true,

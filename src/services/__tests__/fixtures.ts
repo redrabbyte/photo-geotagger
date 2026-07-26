@@ -33,7 +33,9 @@ export function makeJpegWithExif(dateTimeOriginal: string): ArrayBuffer {
  * pointer, optional pre-existing tags) → Exif IFD (DateTimeOriginal etc.)
  * → a "raw strip" marker whose position must never change.
  */
-export function makeTiff(opts: { offsetTime?: boolean } = {}): Uint8Array<ArrayBuffer> {
+export function makeTiff(
+  opts: { offsetTime?: boolean; ifd0Padding?: number } = {}
+): Uint8Array<ArrayBuffer> {
   const chunks: Uint8Array[] = []
   let pos = 0
   const push = (b: Uint8Array) => {
@@ -57,10 +59,12 @@ export function makeTiff(opts: { offsetTime?: boolean } = {}): Uint8Array<ArrayB
     return [u16(tag), u16(type), u32(count), padded]
   }
 
-  // Layout (computed sizes): header 8, IFD0 (1 entry) 2+12+4=18,
-  // ExifIFD (2 or 4 entries), then values, then the strip marker.
+  // Layout (computed sizes): header 8, IFD0 (1 entry) 2+12+4=18, the zero
+  // padding camera files tend to leave behind it, ExifIFD (2 or 4 entries),
+  // then values, then the strip marker.
   const ifd0Offset = 8
-  const exifIfdOffset = ifd0Offset + 18
+  const ifd0Padding = opts.ifd0Padding ?? 16
+  const exifIfdOffset = ifd0Offset + 18 + ifd0Padding
   const exifEntryCount = opts.offsetTime ? 4 : 2
   const valuesOffset = exifIfdOffset + 2 + exifEntryCount * 12 + 4
   const dtoOffset = valuesOffset
@@ -83,6 +87,7 @@ export function makeTiff(opts: { offsetTime?: boolean } = {}): Uint8Array<ArrayB
   push(u16(1))
   entry(0x8769, 4, 1, u32(exifIfdOffset)).forEach(push)
   push(u32(0)) // next IFD
+  if (ifd0Padding > 0) push(new Uint8Array(ifd0Padding))
   // Exif IFD
   push(u16(exifEntryCount))
   entry(0x9003, 2, 20, u32(dtoOffset)).forEach(push)

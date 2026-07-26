@@ -2,25 +2,30 @@
  * Pure-JS metadata writer for TIFF-based RAW files (ARW, NEF, CR2, DNG…) —
  * the "experimental fast RAW" path.
  *
- * TIFF is a web of absolute file offsets (IFD tables, tag values, maker
- * notes, preview images, raw strips). Like the MP4 writer, this one never
- * recalculates any of them — it only ever appends and repoints:
+ * TIFF is a web of absolute file offsets (IFD tables, values, maker notes,
+ * previews, raw strips), so this writer never recalculates one. It also never
+ * MOVES an existing structure: RAW decoders in gallery apps commonly parse a
+ * bounded region at the front of the file, and an IFD0 relocated to the end —
+ * legal TIFF, and what an earlier version of this writer did — leaves them
+ * unable to display the image at all.
  *
- * - Adding the GPS IFD: the GPS data is appended at the end of the file. If
- *   IFD0 already has a GPSInfo tag, only its 4-byte value slot is patched;
- *   otherwise a copy of IFD0 with one extra entry is appended too and the
- *   4-byte IFD0 pointer in the TIFF header is repointed at it. Every copied
- *   entry still references its original value bytes, which never move.
- * - Correcting the capture time: DateTimeOriginal/DateTimeDigitized are
- *   fixed-size ASCII values patched in place. Missing OffsetTime* tags are
- *   added by appending an extended copy of the Exif IFD and repointing the
- *   ExifIFD entry's value slot.
+ * What it does instead, in order of preference:
  *
- * The old tables become dead bytes — a few hundred bytes of padding, the
- * same trade the MP4 writer makes with its freed moov. Anything the parser
- * does not fully understand throws TiffStructureError and the caller falls
- * back to the ExifTool path; HEIC and non-TIFF RAW brands (RAF, CR3, RW2,
- * ORF) fail the magic check and fall back the same way.
+ * - Capture time: DateTimeOriginal/DateTimeDigitized and existing OffsetTime*
+ *   tags are fixed-size ASCII values, patched exactly where they already sit.
+ * - GPS when IFD0 already has a GPSInfo tag: only that tag's 12-byte record is
+ *   rewritten, pointing at a GPS IFD appended to the end of the file.
+ * - GPS when IFD0 has no GPSInfo tag: the table needs 12 more bytes, which are
+ *   claimed from verified padding right behind it (all zero, referenced by
+ *   nothing, ahead of any image data). Values stay put; only the table region
+ *   is rewritten, tag-sorted, with the next-IFD pointer shifted along.
+ * - Missing OffsetTime* tags grow the Exif IFD the same way; their short string
+ *   values are appended, which no decoder needs to reach.
+ *
+ * Anything that does not fit throws TiffStructureError and the caller falls
+ * back to ExifTool, which rewrites the file properly. Reading these files back
+ * does not depend on the appended block being near the front: tiffReader.ts
+ * follows the pointers with ranged reads.
  */
 import type { GeoPoint } from '../../domain/types'
 import { degToDmsRationals } from '../../domain/gpsMath'
@@ -192,20 +197,6 @@ function buildGpsIfd(b: Builder, gps: GeoPoint, base: number): Uint8Array {
   return concatBytes([b.u16(fields.length), ...entries, b.u32(0), ...dataParts])
 }
 
-/** Copy an IFD's table, upserting extra entries (12-byte records), tag-sorted. */
-function rebuildIfdTable(tiff: TiffFile, b: Builder, ifd: Ifd, upserts: Map<number, Uint8Array>): Uint8Array {
-  const records: Array<{ tag: number; bytes: Uint8Array }> = []
-  for (const e of ifd.entries) {
-    const bytes = upserts.get(e.tag) ?? tiff.bytes.slice(e.recordOffset, e.recordOffset + 12)
-    records.push({ tag: e.tag, bytes })
-    upserts.delete(e.tag)
-  }
-  for (const [tag, bytes] of upserts) records.push({ tag, bytes })
-  records.sort((a, z) => a.tag - z.tag)
-  const nextPtr = tiff.bytes.slice(ifd.nextPtrOffset, ifd.nextPtrOffset + 4)
-  return concatBytes([b.u16(records.length), ...records.map((r) => r.bytes), nextPtr])
-}
-
 /** ASCII value patch at the entry's target, keeping length and NUL intact. */
 function asciiPatch(tiff: TiffFile, entry: Entry, text: string): Patch {
   if (entry.type !== T_ASCII) throw new TiffStructureError(`Tag 0x${entry.tag.toString(16)} is not ASCII`)
@@ -216,6 +207,65 @@ function asciiPatch(tiff: TiffFile, entry: Entry, text: string): Patch {
   const target = entry.count > 4 ? entry.slot : entry.recordOffset + 8
   if (target + entry.count > tiff.bytes.byteLength) throw new TiffStructureError('ASCII value out of range')
   return { offset: target, bytes: ascii(`${text}\0`) }
+}
+
+const TYPE_SIZE: Record<number, number> = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 }
+
+/** Tags whose value is an offset to bulk data (strips, tiles, previews). */
+const DATA_OFFSET_TAGS = new Set([0x0111, 0x0144, 0x0201, 0x014a])
+
+/**
+ * Is [start, start+length) unused padding? It must be zero-filled, overlap no
+ * IFD table or value of the structures we know, and lie ahead of every bulk
+ * data block — anything less certain and we leave the file to ExifTool.
+ */
+function isFreePadding(tiff: TiffFile, ifds: Ifd[], start: number, length: number): boolean {
+  if (start < 0 || start + length > tiff.bytes.byteLength) return false
+  for (let i = start; i < start + length; i++) if (tiff.bytes[i] !== 0) return false
+  let dataStart = Number.POSITIVE_INFINITY
+  for (const ifd of ifds) {
+    if (start < ifd.nextPtrOffset + 4 && ifd.offset < start + length) return false
+    for (const e of ifd.entries) {
+      const size = (TYPE_SIZE[e.type] ?? 1) * e.count
+      if (size > 4 && start < e.slot + size && e.slot < start + length) return false
+      if (DATA_OFFSET_TAGS.has(e.tag) && e.count === 1 && e.slot > 0) {
+        dataStart = Math.min(dataStart, e.slot)
+      }
+    }
+  }
+  return start + length <= dataStart
+}
+
+type NewRecord = { tag: number; bytes: Uint8Array }
+
+/** An IFD's table with extra records merged in, tag-sorted, next pointer kept. */
+function mergedTable(tiff: TiffFile, b: Builder, ifd: Ifd, newRecords: NewRecord[]): Uint8Array {
+  const records: NewRecord[] = ifd.entries.map((e) => ({
+    tag: e.tag,
+    bytes: tiff.bytes.slice(e.recordOffset, e.recordOffset + 12),
+  }))
+  records.push(...newRecords)
+  records.sort((x, y) => x.tag - y.tag)
+  const nextPtr = tiff.bytes.slice(ifd.nextPtrOffset, ifd.nextPtrOffset + 4)
+  return concatBytes([b.u16(records.length), ...records.map((r) => r.bytes), nextPtr])
+}
+
+/**
+ * Add records to an IFD without moving anything: the table is rewritten where
+ * it stands (tag-sorted, next-IFD pointer shifted along) into verified padding
+ * behind it. Undefined when that padding is not there.
+ */
+function tryGrowIfdInPlace(
+  tiff: TiffFile,
+  b: Builder,
+  ifd: Ifd,
+  known: Ifd[],
+  newRecords: NewRecord[]
+): Patch | undefined {
+  // The old next-IFD pointer is absorbed by the grown table; the bytes behind
+  // it must be free for the pointer's new home plus the added records.
+  if (!isFreePadding(tiff, known, ifd.nextPtrOffset + 4, newRecords.length * 12)) return undefined
+  return { offset: ifd.offset, bytes: mergedTable(tiff, b, ifd, newRecords) }
 }
 
 /**
@@ -255,63 +305,69 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
       else addOffsetTags.push(tag)
     }
   }
-  const needsExifCopy = addOffsetTags.length > 0
-  if (!edit.gps && !needsExifCopy) return work // pure in-place patch
+  const needsOffsetTags = addOffsetTags.length > 0
+  if (!edit.gps && !needsOffsetTags) return work // pure in-place patch
 
   /*
-   * ---- phase 2: one contiguous appended block, IFD0 first ----
+   * ---- phase 2: grow tables in place, append only new values ----
    *
-   * Chunked readers (exifr, which the app's own import uses) fetch a window
-   * around the offset they seek to. A GPS IFD appended *before* the new IFD0,
-   * or left far from it, is outside that window: the file then parses without
-   * coordinates even though it is valid TIFF. So everything new goes into one
-   * block that STARTS with the IFD0 the header points at, and every value sits
-   * after the table referencing it — one forward window covers all of it.
+   * Nothing that already exists moves. Tables gain records inside padding
+   * behind them; brand-new values (the GPS IFD, the timezone strings) go to the
+   * end of the file, referenced by offset. Reading them back does not depend on
+   * their distance — tiffReader.ts follows the pointers.
    */
+  const known = [ifd0, ...(exifIfd ? [exifIfd] : [])]
   const padding = original.byteLength % 2
+  const block: Uint8Array[] = []
   let cursor = original.byteLength + padding
-  const reserve = (size: number): number => {
-    const offset = cursor
-    cursor += size
-    return offset
+  /** Append bytes to the new block; returns the file offset they will live at. */
+  const emit = (bytes: Uint8Array): number => {
+    const at = cursor
+    block.push(bytes)
+    cursor += bytes.length
+    return at
   }
-  const tableSize = (entries: number) => 2 + entries * 12 + 4
 
-  const hasGpsEntry = ifd0.entries.some((e) => e.tag === TAG_GPS_IFD)
-  const ifd0Offset = reserve(tableSize(ifd0.entries.length + (edit.gps && !hasGpsEntry ? 1 : 0)))
-  const exifIfdOffset = needsExifCopy
-    ? reserve(tableSize(exifIfd!.entries.length + addOffsetTags.length))
-    : undefined
-  const tz = edit.time ? ascii(`${formatTzOffset(edit.time.tzOffsetMin)}\0`) : new Uint8Array(0)
-  const tzOffsets = addOffsetTags.map(() => reserve(tz.length))
-  if (cursor % 2 === 1) reserve(1) // rationals read better on even offsets
-  const gpsIfdOffset = edit.gps ? cursor : undefined
-
-  const ifd0Upserts = new Map<number, Uint8Array>()
-  if (gpsIfdOffset !== undefined) {
-    // Rewrite the whole record: some writers type this tag as IFD/SHORT.
-    ifd0Upserts.set(TAG_GPS_IFD, b.entry(TAG_GPS_IFD, T_LONG, 1, b.u32(gpsIfdOffset)))
-  }
-  if (exifIfdOffset !== undefined) {
-    ifd0Upserts.set(TAG_EXIF_IFD, b.entry(TAG_EXIF_IFD, T_LONG, 1, b.u32(exifIfdOffset)))
-  }
-  const block: Uint8Array[] = [rebuildIfdTable(tiff, b, ifd0, ifd0Upserts)]
-  if (exifIfdOffset !== undefined) {
-    const upserts = new Map<number, Uint8Array>()
-    addOffsetTags.forEach((tag, i) => {
-      upserts.set(tag, b.entry(tag, T_ASCII, tz.length, b.u32(tzOffsets[i])))
+  if (needsOffsetTags) {
+    const tz = ascii(`${formatTzOffset(edit.time!.tzOffsetMin)}\0`)
+    const record = (tag: number, valueAt: number) => ({
+      tag,
+      bytes: b.entry(tag, T_ASCII, tz.length, b.u32(valueAt)),
     })
-    block.push(rebuildIfdTable(tiff, b, exifIfd!, upserts))
-    for (const _ of addOffsetTags) block.push(tz.slice())
+    if (isFreePadding(tiff, known, exifIfd!.nextPtrOffset + 4, addOffsetTags.length * 12)) {
+      const records = addOffsetTags.map((tag) => record(tag, emit(tz.slice())))
+      apply({ offset: exifIfd!.offset, bytes: mergedTable(tiff, b, exifIfd!, records) })
+    } else {
+      // No padding behind the Exif IFD. Unlike IFD0 this one carries no image
+      // structure — no decoder reads it — so append a grown copy and repoint
+      // IFD0's pointer to it, which is a 4-byte patch in place. Its new values
+      // go directly behind the table so one forward read covers both.
+      const tableSize = 2 + (exifIfd!.entries.length + addOffsetTags.length) * 12 + 4
+      const valuesAt = cursor + tableSize
+      const records = addOffsetTags.map((tag, i) => record(tag, valuesAt + i * tz.length))
+      const at = emit(mergedTable(tiff, b, exifIfd!, records))
+      for (const _ of addOffsetTags) emit(tz.slice())
+      apply({ offset: exifPtr!.recordOffset + 8, bytes: b.u32(at) })
+    }
   }
-  if (gpsIfdOffset !== undefined) {
-    // Pad to the reserved (even) GPS offset before the IFD itself.
-    const written = original.byteLength + padding + block.reduce((n, p) => n + p.length, 0)
-    if (gpsIfdOffset > written) block.push(new Uint8Array(gpsIfdOffset - written))
-    block.push(buildGpsIfd(b, edit.gps!, gpsIfdOffset))
+
+  if (edit.gps) {
+    if (cursor % 2 === 1) emit(new Uint8Array(1)) // rationals on even offsets
+    const gpsAt = cursor
+    emit(buildGpsIfd(b, edit.gps, gpsAt))
+    const record = b.entry(TAG_GPS_IFD, T_LONG, 1, b.u32(gpsAt))
+    const existing = ifd0.entries.find((e) => e.tag === TAG_GPS_IFD)
+    if (existing) {
+      // Rewrite the whole record: some writers type this tag as IFD/SHORT.
+      apply({ offset: existing.recordOffset, bytes: record })
+    } else {
+      // IFD0 must never move: a gallery app's decoder reads the image layout
+      // from it, often from a bounded region at the front of the file.
+      const grown = tryGrowIfdInPlace(tiff, b, ifd0, known, [{ tag: TAG_GPS_IFD, bytes: record }])
+      if (!grown) throw new TiffStructureError('No room to add a GPS tag to IFD0 without moving data')
+      apply(grown)
+    }
   }
-  // The header points at the relocated IFD0 — the start of the block.
-  apply({ offset: 4, bytes: b.u32(ifd0Offset) })
 
   const out = new Uint8Array(original.byteLength + padding + block.reduce((n, p) => n + p.length, 0))
   out.set(work, 0)
