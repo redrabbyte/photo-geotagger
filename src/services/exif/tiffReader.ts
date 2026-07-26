@@ -111,41 +111,65 @@ async function refIsNegative(
   return negativeChars.includes(String.fromCharCode(view.getUint8(0)).toUpperCase())
 }
 
+export interface TiffProbe {
+  /** Coordinates, when the file carries a usable GPS IFD. */
+  gps?: GeoPoint
+  /**
+   * The file has an Interoperability IFD (ExifIFD tag 0xA005). Windows' RAW
+   * codec merges that directory into the GPS tag namespace, where Interop
+   * 0x0001/0x0002 collide with GPSLatitudeRef/GPSLatitude — Explorer then shows
+   * "R98" as the hemisphere and no latitude at all. Removing it is the fix.
+   */
+  hasInterop: boolean
+}
+
 /**
  * Read GPS coordinates from a TIFF-based file by following its pointers.
  * Undefined when the file is not TIFF, has no GPS IFD, or the values are
  * unusable — callers keep whatever their EXIF parser found.
  */
 export async function readTiffGps(blob: Blob): Promise<GeoPoint | undefined> {
+  return (await probeTiff(blob)).gps
+}
+
+/** GPS plus the Interop-IFD marker, from one pass of small ranged reads. */
+export async function probeTiff(blob: Blob): Promise<TiffProbe> {
+  const nothing: TiffProbe = { hasInterop: false }
   try {
     const reader = new RangeReader(blob)
     const header = await reader.view(0, 8)
-    if (!header) return undefined
+    if (!header) return nothing
     const order = header.getUint16(0)
-    if (order !== 0x4949 && order !== 0x4d4d) return undefined
+    if (order !== 0x4949 && order !== 0x4d4d) return nothing
     const little = order === 0x4949
-    if (header.getUint16(2, little) !== 42) return undefined
+    if (header.getUint16(2, little) !== 42) return nothing
 
     const ifd0 = await readEntries(reader, header.getUint32(4, little), little)
+    // The Exif IFD usually sits in the window already fetched for IFD0, so
+    // this costs no extra round trip in practice.
+    const exifPointer = ifd0?.find((e) => e.tag === 0x8769)
+    const exif = exifPointer ? await readEntries(reader, exifPointer.slot, little) : undefined
+    const hasInterop = exif?.some((e) => e.tag === 0xa005 && e.slot > 0) ?? false
+
     const gpsPointer = ifd0?.find((e) => e.tag === 0x8825)
-    if (!gpsPointer) return undefined
+    if (!gpsPointer) return { hasInterop }
 
     const gps = await readEntries(reader, gpsPointer.slot, little)
-    if (!gps) return undefined
+    if (!gps) return { hasInterop }
     const latEntry = gps.find((e) => e.tag === 0x0002)
     const lonEntry = gps.find((e) => e.tag === 0x0004)
-    if (!latEntry || !lonEntry || latEntry.count !== 3 || lonEntry.count !== 3) return undefined
+    if (!latEntry || !lonEntry || latEntry.count !== 3 || lonEntry.count !== 3) return { hasInterop }
 
     const latView = await readValue(reader, latEntry)
     const lonView = await readValue(reader, lonEntry)
-    if (!latView || !lonView) return undefined
+    if (!latView || !lonView) return { hasInterop }
     const latRef = gps.find((e) => e.tag === 0x0001) // GPSLatitudeRef: 'N' | 'S'
     const lonRef = gps.find((e) => e.tag === 0x0003) // GPSLongitudeRef: 'E' | 'W'
     const lat = dmsToDegrees(latView, little, await refIsNegative(reader, latRef, 'S'))
     const lon = dmsToDegrees(lonView, little, await refIsNegative(reader, lonRef, 'W'))
-    if (lat === undefined || lon === undefined) return undefined
+    if (lat === undefined || lon === undefined) return { hasInterop }
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
-      return undefined
+      return { hasInterop }
     }
 
     let ele: number | undefined
@@ -164,9 +188,9 @@ export async function readTiffGps(blob: Blob): Promise<GeoPoint | undefined> {
         }
       }
     }
-    return { lat, lon, ele }
+    return { gps: { lat, lon, ele }, hasInterop }
   } catch {
     // unreadable range, malformed structure — nothing to contribute
-    return undefined
+    return nothing
   }
 }

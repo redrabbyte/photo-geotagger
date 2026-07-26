@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readTiffGps } from '../exif/tiffReader'
+import { probeTiff, readTiffGps } from '../exif/tiffReader'
 import { rewriteTiffMetadata } from '../exif/tiffWriter'
 import { makeTiff } from './fixtures'
 
@@ -102,6 +102,15 @@ describe('readTiffGps', () => {
     expect(gps?.lat).toBeCloseTo(48.8581, 4)
     expect(gps?.lon).toBeCloseTo(2.2947, 4)
     expect(gps?.ele).toBeCloseTo(35, 1)
+  })
+
+  it('reports whether an Interop IFD is present', async () => {
+    // Only files that have one need the Windows repair, so the flag drives a
+    // button that must stay hidden for everything else.
+    expect((await probeTiff(new Blob([makeTiff({ interop: true })]))).hasInterop).toBe(true)
+    expect((await probeTiff(new Blob([makeTiff()]))).hasInterop).toBe(false)
+    // Non-TIFF input reports nothing rather than guessing.
+    expect((await probeTiff(new Blob([new TextEncoder().encode('FUJIFILMCCD-RAW')]))).hasInterop).toBe(false)
   })
 
   it('returns undefined for files without GPS and for non-TIFF input', async () => {

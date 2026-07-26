@@ -37,10 +37,21 @@ export class TiffStructureError extends Error {}
 export interface TiffEdit {
   gps?: GeoPoint
   time?: TimeCorrection
+  /**
+   * Drop the Interoperability IFD (ExifIFD tag 0xA005). Windows' RAW codec
+   * merges that directory into the GPS tag namespace, where Interop 0x0001 and
+   * 0x0002 collide with GPSLatitudeRef and GPSLatitude: Explorer shows "R98"
+   * as the hemisphere and no latitude at all, while ExifTool and Lightroom read
+   * the same file correctly. What is lost is the DCF interoperability
+   * declaration ("R98" = DCF basic file, sRGB) — nothing renders from it, and
+   * the colour space stays declared by ExifIFD 0xA001.
+   */
+  dropInterop?: boolean
 }
 
 // TIFF tag ids
 const TAG_EXIF_IFD = 0x8769
+const TAG_INTEROP_IFD = 0xa005
 const TAG_GPS_IFD = 0x8825
 const TAG_DATETIME_ORIGINAL = 0x9003
 const TAG_DATETIME_DIGITIZED = 0x9004
@@ -277,11 +288,31 @@ function tryGrowIfdInPlace(
 }
 
 /**
+ * Drop one record from an IFD, in place. The table shrinks by 12 bytes: the
+ * records behind the removed one move up, the next-IFD pointer follows, and the
+ * 12 bytes freed at the end are zeroed. Values are not touched, the table keeps
+ * its offset, and the directory the record pointed at simply becomes
+ * unreferenced — so nothing anywhere else in the file has to shift.
+ */
+function dropRecordInPlace(tiff: TiffFile, b: Builder, ifd: Ifd, tag: number): Patch | undefined {
+  const kept = ifd.entries.filter((e) => e.tag !== tag)
+  if (kept.length === ifd.entries.length) return undefined // nothing to drop
+  const nextPtr = tiff.bytes.slice(ifd.nextPtrOffset, ifd.nextPtrOffset + 4)
+  const table = concatBytes([
+    b.u16(kept.length),
+    ...kept.map((e) => tiff.bytes.slice(e.recordOffset, e.recordOffset + 12)),
+    nextPtr,
+  ])
+  // Blank the tail the shrunken table no longer covers.
+  return { offset: ifd.offset, bytes: concatBytes([table, new Uint8Array(12)]) }
+}
+
+/**
  * Compute the rewritten file: patches into a copy of the original plus an
  * appended tail. Throws TiffStructureError for anything not fully understood.
  */
 export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint8Array {
-  if (!edit.gps && !edit.time) throw new TiffStructureError('Nothing to write')
+  if (!edit.gps && !edit.time && !edit.dropInterop) throw new TiffStructureError('Nothing to write')
   // One buffer for the whole job: the original copied in once, with slack for
   // the appended block, so a 20 MB RAW peaks at ~2x its size instead of ~3x
   // (the caller holds the source bytes until this returns). `work` is the
@@ -318,6 +349,22 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
       else addOffsetTags.push(tag)
     }
   }
+  if (edit.dropInterop) {
+    // Needs the Exif IFD even when no time correction was requested.
+    if (!exifIfd) {
+      exifPtr = ifd0.entries.find((e) => e.tag === TAG_EXIF_IFD)
+      if (exifPtr) exifIfd = tiff.readIfd(exifPtr.slot)
+    }
+    if (exifIfd) {
+      const drop = dropRecordInPlace(tiff, b, exifIfd, TAG_INTEROP_IFD)
+      if (drop) {
+        apply(drop)
+        // Re-read: the table shrank, so later phases must see the new layout.
+        exifIfd = tiff.readIfd(exifIfd.offset)
+      }
+    }
+  }
+
   const needsOffsetTags = addOffsetTags.length > 0
   if (!edit.gps && !needsOffsetTags) return work // pure in-place patch
 

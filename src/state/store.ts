@@ -127,6 +127,8 @@ export interface AppState {
   applyScanUpdates(updates: ScanUpdate[]): void
   /** Note thumbnail jobs as in flight (cleared when they deliver or fail). */
   markThumbsRequested(ids: string[]): void
+  /** The Interop IFD is gone from this file; it no longer needs the repair. */
+  markInteropFixed(photoId: string): void
   setScanning(scanning: boolean): void
   addTracks(tracks: Track[]): void
   removeTrack(id: string): void
@@ -325,6 +327,15 @@ export const useStore = create<AppState>((set, get) => ({
       const src = s.sources[id]
       if (!src) return s
       return { sources: { ...s.sources, [id]: { ...src, ...patch } } }
+    })
+  },
+
+  markInteropFixed(photoId) {
+    set((s) => {
+      const p = s.photos[photoId]
+      if (!p?.meta?.hasInteropIfd) return s
+      const { hasInteropIfd: _dropped, ...meta } = p.meta
+      return { photos: { ...s.photos, [photoId]: { ...p, meta } } }
     })
   },
 

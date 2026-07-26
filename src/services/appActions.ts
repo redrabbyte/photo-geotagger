@@ -13,11 +13,13 @@ import {
 import { ScanClient } from './scanClient'
 import { captureVideoFrame } from './videoThumb'
 import {
+  isTiffRaw,
   resetIdleExiftoolWorkers,
   setExiftoolPoolSize,
   timeCorrectionFor,
   warmupExiftool,
   writeBatch,
+  writeInteropBatch,
   writeTimeBatch,
 } from './writePipeline'
 import {
@@ -709,6 +711,69 @@ async function ensureWritePermissions(targets: Photo[]): Promise<boolean> {
     }
   }
   return true
+}
+
+/**
+ * Files that already carry a position but would show the wrong latitude in
+ * Windows Explorer, because their Interop IFD collides with the GPS tags in
+ * Windows' RAW codec. Files still to be written need no separate repair — the
+ * GPS write removes the directory on the way.
+ */
+export function interopFixTargets(): Photo[] {
+  const store = useStore.getState()
+  return Object.values(store.photos).filter(
+    (p) =>
+      p.meta?.hasInteropIfd === true &&
+      p.fileHandle !== undefined &&
+      p.writeState !== 'writing' &&
+      isTiffRaw(p) &&
+      // Only files whose coordinates are already in the file are affected; the
+      // rest get fixed by the write that puts a position there.
+      (p.meta?.originalGps !== undefined || p.writeState === 'written')
+  )
+}
+
+/** Strip the Interop IFD from the given files (or every affected one). */
+export async function fixInteropFlow(onlyIds?: string[]): Promise<void> {
+  const store = useStore.getState()
+  const all = interopFixTargets()
+  const targets = onlyIds ? all.filter((p) => onlyIds.includes(p.id)) : all
+  if (targets.length === 0) {
+    store.notify('info', 'No files need the Windows GPS repair.')
+    return
+  }
+  if (!(await ensureWritePermissions(targets))) return
+
+  setExiftoolPoolSize(store.settings.limits.exiftoolWorkers)
+  writeStopRequested = false
+  store.markWriting(targets.map((p) => p.id))
+  const results = await writeInteropBatch(
+    targets,
+    new Map(Object.entries(store.sources)),
+    {
+      mode: store.settings.writeMode,
+      backupOriginals: store.settings.backupOriginals,
+      fastRaw: store.settings.fastRaw,
+      concurrency: writeConcurrency(store.settings),
+      shouldStop: () => writeStopRequested,
+      onProgress: makeProgressReporter(),
+    },
+    (result) => {
+      if (result.ok) useStore.getState().markInteropFixed(result.photoId)
+    }
+  )
+  useStore.getState().resetWriting(targets.map((p) => p.id))
+  useStore.getState().setWriteProgress(undefined)
+  const okCount = results.filter((r) => r.ok).length
+  const failed = results.length - okCount
+  useStore
+    .getState()
+    .notify(
+      failed ? 'error' : 'success',
+      failed
+        ? `Repaired ${okCount}/${results.length} — ${failed} failed (see photo badges)`
+        : `Repaired ${okCount} file(s) — Windows now reads their coordinates`
+    )
 }
 
 /** GPS write targets: assigned photos, plus sidecar-GPS embeds when enabled. */

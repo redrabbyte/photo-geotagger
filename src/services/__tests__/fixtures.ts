@@ -34,7 +34,7 @@ export function makeJpegWithExif(dateTimeOriginal: string): ArrayBuffer {
  * → a "raw strip" marker whose position must never change.
  */
 export function makeTiff(
-  opts: { offsetTime?: boolean; ifd0Padding?: number } = {}
+  opts: { offsetTime?: boolean; ifd0Padding?: number; interop?: boolean } = {}
 ): Uint8Array<ArrayBuffer> {
   const chunks: Uint8Array[] = []
   let pos = 0
@@ -65,7 +65,7 @@ export function makeTiff(
   const ifd0Offset = 8
   const ifd0Padding = opts.ifd0Padding ?? 16
   const exifIfdOffset = ifd0Offset + 18 + ifd0Padding
-  const exifEntryCount = opts.offsetTime ? 4 : 2
+  const exifEntryCount = (opts.offsetTime ? 4 : 2) + (opts.interop ? 1 : 0)
   const valuesOffset = exifIfdOffset + 2 + exifEntryCount * 12 + 4
   const dtoOffset = valuesOffset
   const digitizedOffset = dtoOffset + 20
@@ -79,6 +79,9 @@ export function makeTiff(
     next += 7
     next += 1 // even padding
   }
+
+  // The interop IFD (when present) lives after the strip marker.
+  const interopOffset = next + 26
 
   push(ascii('II'))
   push(u16(42))
@@ -96,6 +99,9 @@ export function makeTiff(
     entry(0x9011, 2, 7, u32(ot1)).forEach(push)
     entry(0x9012, 2, 7, u32(ot2)).forEach(push)
   }
+  // 0xA005 InteropOffset — the directory Windows merges into the GPS namespace.
+  // Points at the interop IFD appended after the strip marker below.
+  if (opts.interop) entry(0xa005, 4, 1, u32(interopOffset)).forEach(push)
   push(u32(0))
   // values
   push(ascii('2026:07:04 17:30:00\0'))
@@ -107,6 +113,14 @@ export function makeTiff(
   }
   if (pos !== next) throw new Error(`layout mismatch: ${pos} != ${next}`)
   push(ascii('RAW-STRIP-DATA-DO-NOT-MOVE'))
+  if (opts.interop) {
+    if (pos !== interopOffset) throw new Error(`interop layout: ${pos} != ${interopOffset}`)
+    // InteropIndex "R98" (ASCII, inline) + InteropVersion "0100" (UNDEFINED).
+    push(u16(2))
+    entry(0x0001, 2, 4, ascii('R98\0')).forEach(push)
+    entry(0x0002, 7, 4, ascii('0100')).forEach(push)
+    push(u32(0))
+  }
 
   const out = new Uint8Array(pos)
   let o = 0

@@ -200,4 +200,40 @@ describe('exiftool runner', () => {
     expect(tags.DateTimeOriginal).toBe('2026:07:04 15:00:00')
     expect(tags.OffsetTimeOriginal).toBe('+02:00')
   })
+
+  it('the real ExifTool confirms the Interop IFD is gone after a fast-RAW fix', { timeout: 120_000 }, async () => {
+    // Windows misreads GPS while that directory is present; the JS writer drops
+    // it by shrinking the Exif IFD table in place. Ask the reference
+    // implementation whether the result is clean.
+    const original = makeTiff({ interop: true })
+    const runner = new ExiftoolRunner(nodeFetch)
+    const before = await parseViaExiftool(runner, 'a.tif', original, ['-json', '-a', '-u', '-InteropIndex'])
+    expect(before.success, before.error).toBe(true)
+    expect(before.output).toContain('R98')
+
+    const fixed = rewriteTiffMetadata(original.buffer as ArrayBuffer, {
+      gps: { lat: -0.9621714, lon: -90.9574566 },
+      dropInterop: true,
+    })
+    // No -G1 here: group prefixes would turn the JSON keys into "GPS:GPSLatitude".
+    const after = await parseViaExiftool(runner, 'a.tif', fixed, [
+      '-json',
+      '-a',
+      '-u',
+      '-n',
+      '-InteropIndex',
+      '-InteropVersion',
+      '-GPSLatitude',
+      '-GPSLatitudeRef',
+      '-validate',
+      '-warning',
+    ])
+    expect(after.success, after.error).toBe(true)
+    const tags = (JSON.parse(after.output) as Array<Record<string, unknown>>)[0]
+    // The directory is gone, the position reads correctly, nothing broke.
+    expect(after.output).not.toContain('R98')
+    expect(tags.InteropIndex).toBeUndefined()
+    expect(tags.GPSLatitude as number).toBeCloseTo(-0.9621714, 5)
+    expect(String(tags.Warning ?? '')).not.toMatch(/error|bad|invalid/i)
+  })
 })

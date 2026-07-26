@@ -41,6 +41,13 @@ export interface PhotoMeta {
    */
   gpsEmpty?: boolean
   /**
+   * TIFF RAW carrying an Interoperability IFD, whose tag ids collide with the
+   * GPS ones in Windows' RAW codec — Explorer then shows "R98" as the
+   * hemisphere and no latitude. Writing a position removes it; files that
+   * already carry coordinates need the repair action.
+   */
+  hasInteropIfd?: boolean
+  /**
    * The corrected capture time has been written into the file; the source's
    * clock offset must no longer be applied to this photo.
    */

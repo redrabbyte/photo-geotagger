@@ -129,6 +129,56 @@ describe('rewriteTiffMetadata', () => {
     }
   })
 
+  /**
+   * Windows' RAW codec merges the Interop IFD into the GPS tag namespace, where
+   * Interop 0x0001/0x0002 overwrite GPSLatitudeRef/GPSLatitude — Explorer then
+   * shows "R98" as the hemisphere and no latitude. Removing the directory is
+   * the only thing that fixes it, and it must cost nothing else.
+   */
+  describe('dropping the Interop IFD', () => {
+    const u16 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint16(o, true)
+    const u32 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint32(o, true)
+    const exifEntries = (b: Uint8Array) => {
+      const exifPtr = u32(b, u32(b, 4) + 2 + 8) // IFD0's first entry is 0x8769
+      const count = u16(b, exifPtr)
+      return {
+        offset: exifPtr,
+        tags: Array.from({ length: count }, (_, i) => u16(b, exifPtr + 2 + i * 12)),
+      }
+    }
+
+    it('removes the 0xA005 pointer in place, keeping the table where it was', () => {
+      const original = makeTiff({ interop: true })
+      expect(exifEntries(original).tags).toContain(0xa005)
+
+      const out = rewriteTiffMetadata(asBuffer(original), { dropInterop: true })
+      const after = exifEntries(out)
+      expect(after.offset).toBe(exifEntries(original).offset) // not relocated
+      expect(after.tags).not.toContain(0xa005)
+      expect(after.tags).toEqual([0x9003, 0x9004]) // the rest survives, in order
+      // Purely subtractive: same length, and the image payload is untouched.
+      expect(out.length).toBe(original.length)
+      expect(new TextDecoder('latin1').decode(out)).toContain('RAW-STRIP-DATA-DO-NOT-MOVE')
+      // IFD0 keeps its offset and its pointer to the Exif IFD.
+      expect(u32(out, 4)).toBe(u32(original, 4))
+    })
+
+    it('is a no-op for files that carry no Interop IFD', () => {
+      const original = makeTiff()
+      const out = rewriteTiffMetadata(asBuffer(original), { dropInterop: true })
+      expect(out).toEqual(original)
+    })
+
+    it('combines with a GPS write — one pass, both fixes', async () => {
+      const original = makeTiff({ interop: true })
+      const out = rewriteTiffMetadata(asBuffer(original), { gps, dropInterop: true })
+      expect(exifEntries(out).tags).not.toContain(0xa005)
+      const parsed = await exifr.parse(asBuffer(out), { tiff: true, gps: true, exif: true })
+      expect(parsed.latitude).toBeCloseTo(gps.lat, 4)
+      expect(parsed.DateTimeOriginal).toBeInstanceOf(Date)
+    })
+  })
+
   it('bails with TiffStructureError on anything not understood', () => {
     const gpsOnly = { gps }
     // Not a TIFF (e.g. RAF/CR3/HEIC magic).

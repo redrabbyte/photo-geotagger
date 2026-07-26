@@ -2,7 +2,7 @@ import exifr from 'exifr'
 import type { PhotoMeta } from '../../domain/types'
 import { normalizeOrientation } from './orient'
 import { parseTzOffsetMin, readVideoMetadata } from './videoMeta'
-import { readTiffGps } from './tiffReader'
+import { probeTiff } from './tiffReader'
 
 // No `pick` filtering: it silently drops tags needed for derived values
 // (e.g. GPS*Ref, without which exifr loses the coordinate's hemisphere).
@@ -90,17 +90,19 @@ export async function extractMeta(
     meta.gpsEmpty = true
   }
 
-  // A RAW's GPS IFD can sit megabytes into the file — past what exifr's chunked
-  // reader reaches, so the parse above comes back without coordinates the file
-  // does carry (tools that append metadata, including older versions of this
-  // app, produce exactly that). Follow the pointers with a couple of small
-  // ranged reads; non-TIFF input and files without a GPS IFD bail immediately.
-  if (!meta.originalGps && kind !== 'jpeg' && input instanceof Blob) {
-    const far = await readTiffGps(input)
-    if (far) {
-      meta.originalGps = far
+  // Walk the TIFF pointers ourselves for two things exifr cannot give us:
+  //  - a GPS IFD sitting megabytes in, past what its chunked reader reaches
+  //    (tools that append metadata, including older versions of this app,
+  //    produce exactly that), and
+  //  - whether an Interop IFD is present, which breaks GPS in Windows.
+  // Non-TIFF input bails on the magic number; the reads share one window.
+  if (kind !== 'jpeg' && input instanceof Blob) {
+    const probe = await probeTiff(input)
+    if (!meta.originalGps && probe.gps) {
+      meta.originalGps = probe.gps
       delete meta.gpsEmpty
     }
+    if (probe.hasInterop) meta.hasInteropIfd = true
   }
   meta.orientation = normalizeOrientation(exif?.Orientation)
   if (typeof exif?.Model === 'string') meta.cameraModel = exif.Model

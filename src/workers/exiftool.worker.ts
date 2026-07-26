@@ -73,6 +73,8 @@ export type ExiftoolRequest =
       video?: boolean
       /** Never coalesced into a batch (large files would multiply memory). */
       heavy?: boolean
+      /** Also delete the Interop IFD, which breaks GPS in Windows' RAW codec. */
+      dropInterop?: boolean
     }
   | { type: 'inspect'; requestId: number; fileName: string; bytes: ArrayBuffer }
   | { type: 'warmup'; requestId: number }
@@ -85,9 +87,18 @@ export type ExiftoolResponse =
 function tagsFor(
   gps: GeoPoint | undefined,
   timeCorrection?: WorkerTimeCorrection,
-  video?: boolean
+  video?: boolean,
+  dropInterop?: boolean
 ): Record<string, string | number> {
   const tags: Record<string, string | number> = {}
+  if (dropInterop) {
+    // An empty value is ExifTool's delete syntax. Emptying both leaves the
+    // Interop IFD with no entries, so the writer drops it and the 0xA005
+    // pointer with it — the whole point, since Windows merges that directory
+    // into the GPS namespace and clobbers the latitude.
+    tags.InteropIndex = ''
+    tags.InteropVersion = ''
+  }
   if (video) {
     if (gps) {
       // QuickTime containers: gallery apps read GPSCoordinates (ISO 6709),
@@ -253,7 +264,7 @@ async function handleWriteBatch(requests: WriteRequest[]): Promise<void> {
   const items: BatchWriteItem[] = requests.map((r) => ({
     name: r.fileName,
     bytes: new Uint8Array(r.bytes),
-    tags: tagsFor(r.gps, r.timeCorrection, r.video),
+    tags: tagsFor(r.gps, r.timeCorrection, r.video, r.dropInterop),
   }))
   const results = await withWasmRecovery(() => writeBatchViaExiftool(runner, items))
   for (let i = 0; i < requests.length; i++) {

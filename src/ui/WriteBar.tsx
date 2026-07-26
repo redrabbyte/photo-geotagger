@@ -1,7 +1,14 @@
 import { useMemo, useRef, useState } from 'react'
 import { isDirty } from '../domain/types'
 import { useStore } from '../state/store'
-import { prepareExiftool, requestWriteStop, writeDirtyFlow, writeTimesFlow } from '../services/appActions'
+import {
+  fixInteropFlow,
+  interopFixTargets,
+  prepareExiftool,
+  requestWriteStop,
+  writeDirtyFlow,
+  writeTimesFlow,
+} from '../services/appActions'
 import { timeCorrectionFor, type WriteMode } from '../services/writePipeline'
 import { formatEtaMs } from './format'
 import { Modal } from './Modal'
@@ -43,6 +50,13 @@ export function WriteBar() {
     [photos, sources]
   )
   const writing = writeProgress !== undefined
+  // Files that already carry a position Windows would misread (Interop IFD).
+  // Only shown when there are any — most imports have none.
+  const interopBroken = useMemo(
+    () => (settings.writeMode === 'exiftool' ? interopFixTargets() : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [photos, settings.writeMode]
+  )
 
   // With an active selection, both write buttons apply to the selection only.
   const hasSelection = selectedIds.size > 0
@@ -198,6 +212,20 @@ export function WriteBar() {
             >
               Fix times in {timeFixShown.length}
               {hasSelection ? ' selected' : ''} file{timeFixShown.length === 1 ? '' : 's'}
+            </button>
+          )}
+          {interopBroken.length > 0 && (
+            <button
+              title={
+                'These files carry a position, but an Interoperability IFD whose tag ids collide with ' +
+                "the GPS ones in Windows' RAW codec — Explorer shows \"R98\" instead of the hemisphere " +
+                'and no latitude at all. This removes that directory and touches nothing else; the ' +
+                'coordinates and the capture time stay as they are. Other tools were always able to ' +
+                'read these files.'
+              }
+              onClick={() => void fixInteropFlow()}
+            >
+              Fix Windows GPS in {interopBroken.length} file{interopBroken.length === 1 ? '' : 's'}
             </button>
           )}
           <button

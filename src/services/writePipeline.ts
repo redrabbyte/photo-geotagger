@@ -15,6 +15,7 @@ import { backupOriginal, readFileBytes, writeFileBytes, writeFileParts } from '.
 import { Mp4StructureError, rewriteMp4Metadata } from './exif/mp4Writer'
 import { TiffStructureError, rewriteTiffMetadata } from './exif/tiffWriter'
 import { extractMeta } from './exif/readMeta'
+import { probeTiff } from './exif/tiffReader'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
@@ -219,7 +220,8 @@ async function exiftoolWriteGps(
   bytes: ArrayBuffer,
   gps: GeoPoint | undefined,
   time?: TimeCorrection,
-  video?: boolean
+  video?: boolean,
+  dropInterop?: boolean
 ): Promise<ArrayBuffer> {
   const timeCorrection = time
     ? {
@@ -230,7 +232,7 @@ async function exiftoolWriteGps(
       }
     : undefined
   const result = await exiftoolRequest(
-    { type: 'write-gps', fileName, bytes, gps, timeCorrection, video, heavy: video },
+    { type: 'write-gps', fileName, bytes, gps, timeCorrection, video, heavy: video, dropInterop },
     [bytes]
   )
   if (!('bytes' in result)) throw new Error('Unexpected worker response')
@@ -386,7 +388,14 @@ async function writeViaExiftool(
     await assertRewritableSize(photo)
     const original = await readFileBytes(photo.fileHandle!)
     // Worker verifies GPS round-trip and size sanity before returning.
-    const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
+    const rewritten = await exiftoolWriteGps(
+      photo.fileName,
+      original,
+      gps,
+      time,
+      photo.kind === 'video',
+      isTiffRaw(photo)
+    )
     await backupThenWrite(photo, source, new Uint8Array(rewritten), backup, dirs)
   })
 }
@@ -428,6 +437,18 @@ async function tryWriteVideoFast(
 }
 
 /**
+ * TIFF-based RAWs — the containers whose Interop IFD makes Windows misread the
+ * GPS latitude. HEIC/RAF/CR3 are not TIFF and never carry one.
+ */
+const TIFF_RAW_EXTENSIONS = new Set(['arw', 'nef', 'cr2', 'dng', 'tif', 'tiff'])
+
+export function isTiffRaw(photo: Photo): boolean {
+  if (photo.kind !== 'raw') return false
+  const dot = photo.fileName.lastIndexOf('.')
+  return dot > 0 && TIFF_RAW_EXTENSIONS.has(photo.fileName.slice(dot + 1).toLowerCase())
+}
+
+/**
  * Experimental fast RAW path: append-and-repoint edit of TIFF-based files
  * (ARW/NEF/CR2/DNG) in JS. Returns false when the container isn't understood
  * OR the rewritten bytes fail verification — the ExifTool path then takes
@@ -445,7 +466,9 @@ async function tryWriteRawFast(
   const original = await readFileBytes(photo.fileHandle)
   let rewritten: Uint8Array
   try {
-    rewritten = rewriteTiffMetadata(original, { gps, time })
+    // Windows misreads GPS while an Interop IFD is present — drop it whenever
+    // we are writing a position anyway.
+    rewritten = rewriteTiffMetadata(original, { gps, time, dropInterop: gps !== undefined && isTiffRaw(photo) })
   } catch (err) {
     if (err instanceof TiffStructureError) return false
     throw err
@@ -548,6 +571,67 @@ export async function writeTimeOnlyPhoto(
   }
   await writeSidecar(photo, source, undefined, time, dirs)
   return 'sidecar'
+}
+
+/**
+ * Repair a file whose Interop IFD makes Windows misread its GPS, without
+ * touching the position or the time. Prefers the pure-JS path (a 12-byte table
+ * edit, no data moved); falls back to ExifTool, which rewrites the metadata
+ * block properly.
+ */
+export async function writeInteropFix(
+  photo: Photo,
+  source: Source,
+  options: WriteOptions,
+  dirs?: DirCache
+): Promise<void> {
+  if (!photo.fileHandle) throw new Error('Missing file handle')
+  if (!isTiffRaw(photo)) throw new Error('Not a TIFF-based RAW')
+  const original = await readFileBytes(photo.fileHandle)
+
+  if (options.fastRaw) {
+    try {
+      const rewritten = rewriteTiffMetadata(original, { dropInterop: true })
+      const probe = await probeTiff(new Blob([rewritten as BlobPart]))
+      if (!probe.hasInterop) {
+        // The position must survive the repair — it is the whole point.
+        const before = await probeTiff(new Blob([new Uint8Array(original) as BlobPart]))
+        if (!before.gps || probe.gps) {
+          await backupThenWrite(photo, source, rewritten, options.backupOriginals, dirs)
+          return
+        }
+      }
+    } catch (err) {
+      if (!(err instanceof TiffStructureError)) throw err
+    }
+  }
+  const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, undefined, false, true)
+  await backupThenWrite(photo, source, new Uint8Array(rewritten), options.backupOriginals, dirs)
+}
+
+/** Batch the Interop repair over many files, reporting each result. */
+export async function writeInteropBatch(
+  photos: Photo[],
+  sources: Map<string, Source>,
+  options: WriteOptions,
+  onResult: (result: WriteJobResult) => void
+): Promise<WriteJobResult[]> {
+  const dirs: DirCache = new Map()
+  return runWriteJobs(
+    photos,
+    options,
+    async (photo) => {
+      const source = sources.get(photo.sourceId)
+      if (!source) return { photoId: photo.id, ok: false, error: 'Unknown source' }
+      try {
+        await writeInteropFix(photo, source, options, dirs)
+        return { photoId: photo.id, ok: true, target: 'exif' }
+      } catch (err) {
+        return { photoId: photo.id, ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+    onResult
+  )
 }
 
 /** Batch clock-fix writes for photos without (or independent of) a GPS assignment. */
