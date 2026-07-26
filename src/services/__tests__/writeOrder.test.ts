@@ -147,6 +147,50 @@ describe('video handling', () => {
     expect(String((badResult as { error?: string }).error)).toMatch(/Worker|not defined/i)
   })
 
+  it('runs fast-MP4 video writes in parallel — the lock only guards ExifTool', async () => {
+    // The one-video-at-a-time rule exists because an ExifTool rewrite holds the
+    // whole clip in WASM memory. The fast path streams the untouched bytes, so
+    // it must not inherit that limit.
+    const box = (type: string, body: Uint8Array) => {
+      const out = new Uint8Array(8 + body.length)
+      new DataView(out.buffer).setUint32(0, out.length)
+      for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i)
+      out.set(body, 8)
+      return out
+    }
+    const mvhd = new Uint8Array(100)
+    new DataView(mvhd.buffer).setUint32(4, Math.floor(Date.now() / 1000) + 2_082_844_800)
+    const mp4 = new Blob([
+      box('ftyp', new Uint8Array([0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0])),
+      box('mdat', new Uint8Array(5000)),
+      box('moov', box('mvhd', mvhd)),
+    ])
+    const gauge = { active: 0, max: 0 }
+    const fileHandle = {
+      getFile: async () => mp4,
+      createWritable: async () => {
+        gauge.active++
+        gauge.max = Math.max(gauge.max, gauge.active)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return {
+          write: async () => {},
+          close: async () => void gauge.active--,
+          abort: async () => void gauge.active--,
+        }
+      },
+    } as unknown as FileSystemFileHandle
+    const source: Source = { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, assumedTzOffsetMin: 0 }
+    const videos = ['v1', 'v2', 'v3'].map((id) => ({ ...makePhoto(id, 'video'), sourceId: 'src', fileHandle }))
+    const results = await writeBatch(
+      videos,
+      new Map([['src', source]]),
+      { mode: 'exiftool', backupOriginals: false, fastMp4: true, concurrency: 3 },
+      () => {}
+    )
+    expect(results.every((r) => r.ok)).toBe(true)
+    expect(gauge.max).toBeGreaterThan(1)
+  })
+
   it('writes sidecar videos in parallel in safe mode', async () => {
     // Safe mode only drops an .xmp next to the video — no WASM memory is held,
     // so throttling to one at a time would waste the other workers.

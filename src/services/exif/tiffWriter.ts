@@ -211,6 +211,14 @@ function asciiPatch(tiff: TiffFile, entry: Entry, text: string): Patch {
 
 const TYPE_SIZE: Record<number, number> = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 }
 
+/**
+ * Slack reserved behind the original bytes for everything this writer can
+ * append: a GPS IFD with its rationals, a grown Exif IFD copy, timezone
+ * strings. Two orders of magnitude more than the ~200 bytes actually used, and
+ * the assembly step fails loudly rather than overrunning it.
+ */
+const APPEND_CAPACITY = 64 * 1024
+
 /** Tags whose value is an offset to bulk data (strips, tiles, previews). */
 const DATA_OFFSET_TAGS = new Set([0x0111, 0x0144, 0x0201, 0x014a])
 
@@ -274,9 +282,14 @@ function tryGrowIfdInPlace(
  */
 export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint8Array {
   if (!edit.gps && !edit.time) throw new TiffStructureError('Nothing to write')
-  // All patches land in this working copy immediately, so a later phase that
-  // copies IFD records (e.g. the GPS rebuild of IFD0) sees repointed values.
-  const work = new Uint8Array(original.slice(0))
+  // One buffer for the whole job: the original copied in once, with slack for
+  // the appended block, so a 20 MB RAW peaks at ~2x its size instead of ~3x
+  // (the caller holds the source bytes until this returns). `work` is the
+  // original-sized view of it; patches land in it immediately so a later phase
+  // that copies IFD records sees the repointed values.
+  const buffer = new Uint8Array(original.byteLength + APPEND_CAPACITY)
+  buffer.set(new Uint8Array(original), 0)
+  const work = buffer.subarray(0, original.byteLength)
   const tiff = new TiffFile(work)
   const b = new Builder(tiff.little)
   const ifd0 = tiff.readIfd(tiff.u32(4))
@@ -369,12 +382,12 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
     }
   }
 
-  const out = new Uint8Array(original.byteLength + padding + block.reduce((n, p) => n + p.length, 0))
-  out.set(work, 0)
+  const total = original.byteLength + padding + block.reduce((n, p) => n + p.length, 0)
+  if (total > buffer.length) throw new TiffStructureError('Appended metadata exceeds the reserved space')
   let o = original.byteLength + padding
   for (const part of block) {
-    out.set(part, o)
+    buffer.set(part, o)
     o += part.length
   }
-  return out
+  return buffer.subarray(0, total)
 }

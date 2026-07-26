@@ -4,7 +4,8 @@ import { TiffStructureError, rewriteTiffMetadata } from '../exif/tiffWriter'
 import { makeTiff } from './fixtures'
 
 
-const asBuffer = (b: Uint8Array): ArrayBuffer => b.buffer as ArrayBuffer
+/** Exact-size copy: the writer returns a view into a buffer with slack. */
+const asBuffer = (b: Uint8Array): ArrayBuffer => b.slice().buffer
 
 describe('rewriteTiffMetadata', () => {
   const gps = { lat: 48.8581, lon: 2.2947, ele: 35 }

@@ -37,12 +37,18 @@ import {
  * parallelism hides it almost linearly. ExifTool mode keeps ~3 requests in
  * flight per worker so each worker's queue coalesces into one Perl run
  * (the workers batch internally), bounded to limit RAW buffers in memory.
+ *
+ * The experimental fast paths use no worker at all — they are I/O bound like
+ * safe mode — so deriving their limit from the ExifTool pool would throttle
+ * them for nothing (with "Parallel (RAW)" off that pool is 1, i.e. 3 jobs).
+ * They still buffer a file per job, hence a lower ceiling on phones.
  */
 function writeConcurrency(settings: AppSettings): number {
-  if (settings.writeMode === 'exiftool') {
-    return Math.min(8, recommendedExiftoolPool(settings.parallelExiftool) * 3)
-  }
-  return 6
+  if (settings.writeMode !== 'exiftool') return 6
+  const pooled = recommendedExiftoolPool(settings.parallelExiftool) * 3
+  const fastPath = settings.fastRaw || settings.fastMp4
+  const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+  return Math.min(8, Math.max(pooled, fastPath ? (mobile ? 4 : 6) : 0))
 }
 
 /**

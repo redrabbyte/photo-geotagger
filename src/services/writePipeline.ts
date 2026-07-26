@@ -332,6 +332,31 @@ async function writeSidecar(
 }
 
 /**
+ * At most one in-place VIDEO rewrite through ExifTool at a time: each run holds
+ * the whole file plus its rewritten copy in WASM memory, so two large clips at
+ * once are what takes the tab down. The lock sits around that operation rather
+ * than around every video job, so the pure-JS fast path — which streams the
+ * untouched bytes and holds almost nothing — runs fully in parallel, while a
+ * file that falls back here still gets the protection.
+ */
+let videoRewriteTurn: Promise<void> = Promise.resolve()
+
+function serializeVideoRewrite<T>(photo: Photo, run: () => Promise<T>): Promise<T> {
+  if (photo.kind !== 'video') return run()
+  const previous = videoRewriteTurn
+  let release!: () => void
+  videoRewriteTurn = new Promise((resolve) => (release = resolve))
+  return (async () => {
+    await previous
+    try {
+      return await run()
+    } finally {
+      release()
+    }
+  })()
+}
+
+/**
  * Rewriting holds the file plus its rewritten copy in memory, and a single
  * ArrayBuffer tops out around 2 GB — long clips can never fit. Fail fast
  * with advice instead of a cryptic allocation error.
@@ -357,12 +382,13 @@ async function writeViaExiftool(
   dirs?: DirCache
 ): Promise<void> {
   if (!photo.fileHandle) throw new Error('Missing file handle')
-  await assertRewritableSize(photo)
-  const original = await readFileBytes(photo.fileHandle)
-  // Worker verifies GPS round-trip and size sanity before returning.
-  const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
-
-  await backupThenWrite(photo, source, new Uint8Array(rewritten), backup, dirs)
+  await serializeVideoRewrite(photo, async () => {
+    await assertRewritableSize(photo)
+    const original = await readFileBytes(photo.fileHandle!)
+    // Worker verifies GPS round-trip and size sanity before returning.
+    const rewritten = await exiftoolWriteGps(photo.fileName, original, gps, time, photo.kind === 'video')
+    await backupThenWrite(photo, source, new Uint8Array(rewritten), backup, dirs)
+  })
 }
 
 /**
@@ -501,10 +527,12 @@ export async function writeTimeOnlyPhoto(
         return 'exif'
       }
     }
-    await assertRewritableSize(photo)
-    const original = await readFileBytes(photo.fileHandle)
-    const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')
-    await backupThenWrite(photo, source, new Uint8Array(rewritten), options.backupOriginals, dirs)
+    await serializeVideoRewrite(photo, async () => {
+      await assertRewritableSize(photo)
+      const original = await readFileBytes(photo.fileHandle!)
+      const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')
+      await backupThenWrite(photo, source, new Uint8Array(rewritten), options.backupOriginals, dirs)
+    })
     return 'exif'
   }
   if (photo.kind === 'jpeg') {
@@ -577,21 +605,19 @@ async function runWriteJobs(
   const queue = [...photos].sort((a, b) => Number(a.kind === 'video') - Number(b.kind === 'video'))
   let completed = 0
   const workerCount = Math.max(1, Math.min(options.concurrency ?? 1, photos.length))
-  // At most one video in flight — but only when rewriting it in place: each
-  // ExifTool run holds the whole file plus its rewritten copy in WASM memory,
-  // so concurrency would multiply the footprint. Safe mode only writes a small
-  // .xmp sidecar next to the video, which carries no such risk.
-  const serializeVideos = options.mode === 'exiftool'
+  // Videos are written one at a time only where that is actually needed — an
+  // in-place ExifTool rewrite (see serializeVideoRewrite). With the fast MP4
+  // path they stream, so they neither need the lock nor count as serial work.
+  const serialVideos = options.mode === 'exiftool' && !options.fastMp4
   // Per-file-class service times keep mixed JPEG/RAW batches from whipsawing
   // the ETA; dividing by the worker count keeps parallel bursts from doing so —
-  // except for classes the loop below runs strictly one at a time.
+  // except for classes that run strictly one at a time.
   const eta = makeBatchEtaEstimator(workerCount, {
-    serialKinds: serializeVideos ? new Set(['video']) : undefined,
+    serialKinds: serialVideos ? new Set(['video']) : undefined,
     priors: etaPriors(options.mode),
   })
   const remainingByKind: Record<string, number> = {}
   for (const p of photos) remainingByKind[etaKind(p)] = (remainingByKind[etaKind(p)] ?? 0) + 1
-  let videoTurn: Promise<void> = Promise.resolve()
 
   const workers = Array.from({ length: workerCount }, async () => {
     for (;;) {
@@ -616,20 +642,7 @@ async function runWriteJobs(
         if (result.ok) eta.record(etaKind(photo), Date.now() - startedAt)
         return result
       }
-      let result: WriteJobResult
-      if (photo.kind === 'video' && serializeVideos) {
-        const previous = videoTurn
-        let release!: () => void
-        videoTurn = new Promise((resolve) => (release = resolve))
-        await previous
-        try {
-          result = await runJob()
-        } finally {
-          release()
-        }
-      } else {
-        result = await runJob()
-      }
+      const result = await runJob()
       remainingByKind[etaKind(photo)]--
       completed++
       results.push(result)
