@@ -135,6 +135,21 @@ export function WriteBar() {
         </label>
       )}
 
+      {settings.writeMode === 'exiftool' && (
+        <label
+          className="checkbox-row"
+          title="Experimental: write GPS and corrected time into MP4/MOV containers directly in the browser — seconds instead of minutes for large clips, and no size limit. Files whose structure isn't fully understood automatically fall back to the ExifTool path. The rewritten metadata is verified before the original is replaced; keeping Backup originals on is recommended while this is experimental."
+        >
+          <input
+            type="checkbox"
+            checked={settings.fastMp4}
+            onChange={(e) => useStore.getState().setSettings({ fastMp4: e.target.checked })}
+            disabled={writing}
+          />
+          Experimental fast MP4
+        </label>
+      )}
+
       {settings.writeMode === 'exiftool' && sidecarEmbedCount > 0 && (
         <label
           className="checkbox-row"

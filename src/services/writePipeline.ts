@@ -11,7 +11,8 @@ import {
 } from './exif/writeJpeg'
 import { makeBatchEtaEstimator } from './eta'
 import { isFatalWasmError } from './exif/exiftoolRunner'
-import { backupOriginal, readFileBytes, writeFileBytes } from './fs/safeWrite'
+import { backupOriginal, readFileBytes, writeFileBytes, writeFileParts } from './fs/safeWrite'
+import { Mp4StructureError, rewriteMp4Metadata } from './exif/mp4Writer'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
@@ -35,6 +36,8 @@ export interface WriteOptions {
   concurrency?: number
   /** ExifTool mode: photos without an assignment fall back to sidecar GPS. */
   embedSidecarGps?: boolean
+  /** Experimental: edit MP4/MOV boxes directly in JS; falls back to ExifTool. */
+  fastMp4?: boolean
   /** Checked between files: when true, no further file is started. */
   shouldStop?: () => boolean
   onProgress?: (done: number, total: number, current: string, etaMs?: number) => void
@@ -359,6 +362,42 @@ async function writeViaExiftool(
 }
 
 /**
+ * Experimental fast MP4 path: edit the container boxes directly in JS —
+ * seconds instead of a WASM round trip, no whole-file buffers, no size cap.
+ * Returns false when the writer doesn't understand the file (caller falls
+ * back to ExifTool); the rebuilt moov is verified before anything is written.
+ */
+async function tryWriteVideoFast(
+  photo: Photo,
+  source: Source,
+  gps: GeoPoint | undefined,
+  backup: boolean,
+  time?: TimeCorrection,
+  dirs?: DirCache
+): Promise<boolean> {
+  if (!photo.fileHandle) throw new Error('Missing file handle')
+  const file = await photo.fileHandle.getFile()
+  let rewrite
+  try {
+    rewrite = await rewriteMp4Metadata(file, {
+      gps,
+      time: time
+        ? { utcMs: time.wallClockMs - time.tzOffsetMin * 60_000, tzOffsetMin: time.tzOffsetMin }
+        : undefined,
+    })
+  } catch (err) {
+    if (err instanceof Mp4StructureError) return false
+    throw err
+  }
+  if (rewrite.size < file.size) {
+    throw new Error('Rewritten video is smaller than the original — refusing to overwrite')
+  }
+  await backupIfNeeded(photo, source, backup, dirs)
+  await writeFileParts(photo.fileHandle, rewrite.parts)
+  return true
+}
+
+/**
  * Write one photo's assigned GPS. Returns which target was written.
  * Mode 'safe': JPEG in place (pure JS), everything else gets an XMP sidecar.
  * Mode 'exiftool': every format written in place via ExifTool WASM.
@@ -380,6 +419,11 @@ export async function writePhoto(
     return { target: 'exif', timeCorrection: time }
   }
   if (options.mode === 'exiftool') {
+    if (photo.kind === 'video' && options.fastMp4) {
+      if (await tryWriteVideoFast(photo, source, gps, options.backupOriginals, time, dirs)) {
+        return { target: 'exif', timeCorrection: time }
+      }
+    }
     await writeViaExiftool(photo, source, gps, options.backupOriginals, time, dirs)
     return { target: 'exif', timeCorrection: time }
   }
@@ -400,6 +444,11 @@ export async function writeTimeOnlyPhoto(
 ): Promise<'exif' | 'sidecar'> {
   if (options.mode === 'exiftool' && photo.kind !== 'jpeg') {
     if (!photo.fileHandle) throw new Error('Missing file handle')
+    if (photo.kind === 'video' && options.fastMp4) {
+      if (await tryWriteVideoFast(photo, source, undefined, options.backupOriginals, time, dirs)) {
+        return 'exif'
+      }
+    }
     await assertRewritableSize(photo)
     const original = await readFileBytes(photo.fileHandle)
     const rewritten = await exiftoolWriteGps(photo.fileName, original, undefined, time, photo.kind === 'video')

@@ -72,7 +72,7 @@ function fourCC(view: DataView, offset: number): string {
   )
 }
 
-interface BoxHeader {
+export interface BoxHeader {
   type: string
   /** Total box size including the header. */
   size: number
@@ -84,7 +84,7 @@ interface BoxHeader {
  * the enclosing container — a declared size of 0 means "extends to the end"
  * and resolves against it. Undefined for truncated or nonsensical headers.
  */
-function parseBoxHeader(header: DataView, remaining: number): BoxHeader | undefined {
+export function parseBoxHeader(header: DataView, remaining: number): BoxHeader | undefined {
   if (header.byteLength < 8) return undefined
   let size = header.getUint32(0)
   const type = fourCC(header, 4)
@@ -101,7 +101,7 @@ function parseBoxHeader(header: DataView, remaining: number): BoxHeader | undefi
 }
 
 /** Walk a file's top-level boxes, reading only the 16 header bytes of each. */
-async function* topLevelBoxes(blob: Blob): AsyncGenerator<{ header: BoxHeader; offset: number }> {
+export async function* topLevelBoxes(blob: Blob): AsyncGenerator<{ header: BoxHeader; offset: number }> {
   let offset = 0
   for (let guard = 0; guard < 64 && offset + 8 <= blob.size; guard++) {
     const view = new DataView(await blob.slice(offset, Math.min(blob.size, offset + 16)).arrayBuffer())
@@ -113,7 +113,7 @@ async function* topLevelBoxes(blob: Blob): AsyncGenerator<{ header: BoxHeader; o
 }
 
 /** Walk the direct children of an already-loaded box body. */
-function* childBoxes(body: DataView): Generator<{ header: BoxHeader; offset: number }> {
+export function* childBoxes(body: DataView): Generator<{ header: BoxHeader; offset: number }> {
   let offset = 0
   while (offset + 8 <= body.byteLength) {
     const view = new DataView(body.buffer, body.byteOffset + offset, Math.min(16, body.byteLength - offset))
@@ -136,7 +136,7 @@ async function findMoov(blob: Blob): Promise<Uint8Array | undefined> {
 }
 
 /** moov/mvhd creation_time (UTC, seconds since 1904). */
-function mvhdDateFromMoov(moov: Uint8Array): VideoDate | undefined {
+export function mvhdDateFromMoov(moov: Uint8Array): VideoDate | undefined {
   const body = new DataView(moov.buffer, moov.byteOffset, moov.byteLength)
   for (const { header, offset } of childBoxes(body)) {
     if (header.type !== 'mvhd') continue
@@ -164,7 +164,7 @@ function parseIso6709(s: string): GeoPoint | undefined {
 }
 
 /** GPS from moov: the ©xyz UserData atom, else any ISO 6709 token (Keys). */
-function gpsFromMoov(moov: Uint8Array): GeoPoint | undefined {
+export function gpsFromMoov(moov: Uint8Array): GeoPoint | undefined {
   // latin1 maps every byte to the same code point, so box names and the
   // coordinate strings come through intact.
   const text = new TextDecoder('latin1').decode(moov)

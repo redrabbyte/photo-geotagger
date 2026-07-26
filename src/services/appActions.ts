@@ -617,6 +617,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
     {
       mode: store.settings.writeMode,
       backupOriginals: store.settings.backupOriginals,
+      fastMp4: store.settings.fastMp4,
       concurrency: timeConcurrency,
       shouldStop: () => writeStopRequested,
       onProgress: makeProgressReporter(),
@@ -750,6 +751,7 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
       backupOriginals: store.settings.backupOriginals,
       writeCorrectedTime: store.settings.writeCorrectedTime,
       embedSidecarGps: store.settings.writeMode === 'exiftool' && store.settings.embedSidecarGps,
+      fastMp4: store.settings.fastMp4,
       concurrency: gpsConcurrency,
       shouldStop: () => writeStopRequested,
       onProgress: makeProgressReporter(),

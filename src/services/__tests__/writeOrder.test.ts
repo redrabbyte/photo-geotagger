@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Photo, Source } from '../../domain/types'
 import { photoKindFromName } from '../../domain/types'
 import { writeBatch } from '../writePipeline'
+import { readVideoMetadata } from '../exif/videoMeta'
 
 function makePhoto(id: string, kind: Photo['kind']): Photo {
   const fileName = `${id}.${kind === 'jpeg' ? 'jpg' : kind === 'video' ? 'mp4' : 'arw'}`
@@ -88,6 +89,62 @@ describe('video handling', () => {
       () => {}
     )
     expect(gauge.max).toBe(1)
+  })
+
+  it('fast MP4 path writes in JS; unknown structures fall back to ExifTool', async () => {
+    const box = (type: string, body: Uint8Array) => {
+      const out = new Uint8Array(8 + body.length)
+      new DataView(out.buffer).setUint32(0, out.length)
+      for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i)
+      out.set(body, 8)
+      return out
+    }
+    const mvhd = new Uint8Array(100)
+    new DataView(mvhd.buffer).setUint32(4, Math.floor(Date.now() / 1000) + 2_082_844_800)
+    const mp4 = new Blob([
+      box('ftyp', new Uint8Array([0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0])),
+      box('mdat', new Uint8Array(5000)),
+      box('moov', box('mvhd', mvhd)),
+    ])
+    const makeHandle = (blob: Blob) => {
+      const written: BlobPart[] = []
+      return {
+        handle: {
+          getFile: async () => blob,
+          createWritable: async () => ({
+            write: async (c: BlobPart) => void written.push(c),
+            close: async () => {},
+            abort: async () => {},
+          }),
+        } as unknown as FileSystemFileHandle,
+        written,
+      }
+    }
+    const source: Source = { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, assumedTzOffsetMin: 0 }
+    const good = makeHandle(mp4)
+    const bad = makeHandle(new Blob([new Uint8Array(5000)]))
+    const photos = [
+      { ...makePhoto('good', 'video'), sourceId: 'src', fileHandle: good.handle },
+      { ...makePhoto('bad', 'video'), sourceId: 'src', fileHandle: bad.handle },
+    ]
+    const results = await writeBatch(
+      photos,
+      new Map([['src', source]]),
+      { mode: 'exiftool', backupOriginals: false, fastMp4: true, concurrency: 1 },
+      () => {}
+    )
+    // The valid MP4 was written by the JS path — with the GPS readable back.
+    const goodResult = results.find((r) => r.photoId === 'good')!
+    expect(goodResult.ok).toBe(true)
+    const meta = await readVideoMetadata(new Blob(good.written))
+    expect(meta.gps?.lat).toBeCloseTo(1, 4)
+    expect(meta.gps?.lon).toBeCloseTo(2, 4)
+    // The garbage file fell back to the ExifTool path, which cannot run
+    // here (no Worker in Node) — proving the fallback was attempted.
+    const badResult = results.find((r) => r.photoId === 'bad')!
+    expect(badResult.ok).toBe(false)
+    expect(bad.written).toHaveLength(0)
+    expect(String((badResult as { error?: string }).error)).toMatch(/Worker|not defined/i)
   })
 
   it('writes sidecar videos in parallel in safe mode', async () => {
