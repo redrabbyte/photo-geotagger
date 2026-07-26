@@ -79,6 +79,30 @@ async function readEntries(
   return entries
 }
 
+/** First value of a SHORT/LONG entry (dimensions, compression, offsets). */
+async function scalar(
+  reader: RangeReader,
+  entry: RawEntry | undefined,
+  little: boolean
+): Promise<number | undefined> {
+  if (!entry) return undefined
+  const view = await readValue(reader, entry)
+  if (!view) return undefined
+  if (entry.type === 3) return view.getUint16(0, little)
+  if (entry.type === 4) return view.getUint32(0, little)
+  return undefined
+}
+
+/** All values of a LONG entry (a SubIFD pointer list holds several). */
+async function longs(reader: RangeReader, entry: RawEntry, little: boolean): Promise<number[]> {
+  if (entry.type !== 4) return []
+  const view = await readValue(reader, entry)
+  if (!view) return []
+  const out: number[] = []
+  for (let i = 0; i + 4 <= view.byteLength; i += 4) out.push(view.getUint32(i, little))
+  return out
+}
+
 /** Values ≤ 4 bytes live in the slot itself; larger ones at the offset it holds. */
 async function readValue(reader: RangeReader, entry: RawEntry): Promise<DataView | undefined> {
   const size = (TYPE_SIZE[entry.type] ?? 0) * entry.count
@@ -109,6 +133,104 @@ async function refIsNegative(
   const view = await readValue(reader, entry)
   if (!view || view.byteLength === 0) return false
   return negativeChars.includes(String.fromCharCode(view.getUint8(0)).toUpperCase())
+}
+
+/** JPEG SOI: the only thing that makes a candidate range worth slicing out. */
+function isJpegStart(bytes: Uint8Array | undefined): boolean {
+  return bytes !== undefined && bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+}
+
+/** Big enough to be a preview rather than a stray pointer. */
+const PREVIEW_MIN_BYTES = 1024
+/** Beyond this a "preview" is the full-resolution JPEG — decode it only if it is all there is. */
+const PREVIEW_COMFORTABLE_BYTES = 4 * 1024 * 1024
+
+/**
+ * Find the embedded JPEG preview of a TIFF-based file and return it as a Blob.
+ *
+ * `exifr.thumbnail()` cannot do this for RAWs: it looks only at IFD1's
+ * ThumbnailOffset/ThumbnailLength and reads them out of whatever chunk happens
+ * to be loaded — so a Sony ARW, whose real preview lives in a SubIFD, yields
+ * nothing at all, and a preview megabytes into the file yields nothing even
+ * when the directory says where it is. That is why RAW tiles stayed blank while
+ * JPEGs (whose IFD1 thumbnail sits in the first few kB) were fine.
+ *
+ * This walks the whole directory structure — the IFD chain, nested SubIFDs —
+ * collecting every JPEG-shaped range: an offset/length pair (0x0201/0x0202) or
+ * a single-strip IFD with JPEG compression (CR2's IFD0, DNG's reduced-res
+ * SubIFD). Candidates are verified to start with a JPEG SOI marker before the
+ * range is sliced, so a stale pointer can never produce a broken image.
+ *
+ * Cost is a handful of small ranged reads plus one slice of the preview itself;
+ * the RAW's actual pixel data is never touched.
+ */
+export async function readTiffPreview(blob: Blob): Promise<Blob | undefined> {
+  try {
+    const reader = new RangeReader(blob)
+    const header = await reader.view(0, 8)
+    if (!header) return undefined
+    const order = header.getUint16(0)
+    if (order !== 0x4949 && order !== 0x4d4d) return undefined
+    const little = order === 0x4949
+    if (header.getUint16(2, little) !== 42) return undefined
+
+    const candidates: Array<{ offset: number; length: number }> = []
+    const visited = new Set<number>()
+
+    const visit = async (offset: number, depth: number): Promise<void> => {
+      if (offset <= 0 || offset >= blob.size || visited.has(offset) || visited.size >= 24) return
+      visited.add(offset)
+      const entries = await readEntries(reader, offset, little)
+      if (!entries) return
+      const find = (tag: number) => entries.find((e) => e.tag === tag)
+
+      // The usual pair: JPEGInterchangeFormat / -Length, also known as
+      // ThumbnailOffset (IFD1) and PreviewImageStart (a RAW's SubIFD).
+      const start = await scalar(reader, find(0x0201), little)
+      const length = await scalar(reader, find(0x0202), little)
+      if (start !== undefined && length !== undefined) candidates.push({ offset: start, length })
+
+      // An IFD that is itself a JPEG image: one strip, JPEG compression.
+      const compression = await scalar(reader, find(0x0103), little)
+      if (compression === 6 || compression === 7) {
+        const strip = find(0x0111)
+        const size = find(0x0117)
+        if (strip?.count === 1 && size?.count === 1) {
+          const at = await scalar(reader, strip, little)
+          const bytes = await scalar(reader, size, little)
+          if (at !== undefined && bytes !== undefined) candidates.push({ offset: at, length: bytes })
+        }
+      }
+
+      const subIfds = find(0x014a)
+      if (subIfds && depth < 2) {
+        for (const sub of await longs(reader, subIfds, little)) await visit(sub, depth + 1)
+      }
+      // Next directory in the chain (IFD1 and beyond) — same nesting level.
+      const next = await reader.view(offset + 2 + entries.length * 12, 4)
+      if (next) await visit(next.getUint32(0, little), depth)
+    }
+
+    await visit(header.getUint32(4, little), 0)
+
+    // Largest preview that is still cheap to decode; a full-resolution one only
+    // when nothing smaller exists (then the smallest of those).
+    const usable = candidates
+      .filter((c) => c.length >= PREVIEW_MIN_BYTES && c.offset > 0 && c.offset + c.length <= blob.size)
+      .sort((a, b) => b.length - a.length)
+    const comfortable = usable.filter((c) => c.length <= PREVIEW_COMFORTABLE_BYTES)
+    const ranked = comfortable.length > 0 ? comfortable : [...usable].reverse()
+
+    for (const c of ranked) {
+      if (isJpegStart(await reader.bytes(c.offset, 3))) {
+        return blob.slice(c.offset, c.offset + c.length, 'image/jpeg')
+      }
+    }
+    return undefined
+  } catch {
+    // malformed structure or an unreadable range — the caller falls back
+    return undefined
+  }
 }
 
 export interface TiffProbe {

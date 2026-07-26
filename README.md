@@ -134,6 +134,12 @@ the file's modified time (flagged in the inspector).
 
 ### Performance & robustness notes
 
+- RAW previews are located by walking the file's own TIFF directories with
+  small ranged reads (IFD chain, SubIFDs, single-strip JPEG IFDs), verifying a
+  JPEG SOI marker before slicing. `exifr.thumbnail()` cannot do this: it reads
+  only IFD1's ThumbnailOffset out of the chunk it happens to have loaded, so a
+  Sony ARW (preview behind a SubIFD, megabytes in) yielded no thumbnail at
+  all.
 - Metadata scanning streams through a worker pool with small batches; there
   is no upfront stat pass (it starved the scan on Android SAF). Thumbnails
   are generated lazily for visible filmstrip items only, debounced against

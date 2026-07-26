@@ -10,8 +10,8 @@ import { useStore } from '../state/store'
 import { ensureMeta, ensureThumbs } from '../services/appActions'
 import { TrackEditorPanel } from './TrackEditorPanel'
 import { formatCoord, formatDeltaMs, formatUtc } from './format'
-import exifr from 'exifr'
 import { orientBlob } from '../services/exif/orient'
+import { embeddedPreview } from '../services/exif/preview'
 import { captureVideoFrame } from '../services/videoThumb'
 import { Modal } from './Modal'
 
@@ -64,9 +64,10 @@ export function Inspector() {
           if (frame) url = URL.createObjectURL(frame)
         } else {
           const file = await photo.fileHandle!.getFile()
-          const embedded = (await exifr.thumbnail(file)) as Uint8Array | undefined
-          if (embedded) {
-            const blob = new Blob([embedded as unknown as BlobPart], { type: 'image/jpeg' })
+          // Same extraction the thumbnail worker uses: a RAW's preview may sit
+          // in a SubIFD or far into the file, where exifr alone finds nothing.
+          const blob = await embeddedPreview(file, photo.kind)
+          if (blob) {
             const oriented = await orientBlob(blob, photo.meta?.orientation)
             url = URL.createObjectURL(oriented ?? blob)
           }

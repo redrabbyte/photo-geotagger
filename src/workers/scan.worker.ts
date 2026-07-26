@@ -2,6 +2,7 @@
 import exifr from 'exifr'
 import type { PhotoKind, PhotoMeta } from '../domain/types'
 import { extractMeta } from '../services/exif/readMeta'
+import { embeddedPreview } from '../services/exif/preview'
 import { needsManualOrientation, normalizeOrientation, orientedBlob } from '../services/exif/orient'
 
 export interface ScanJob {
@@ -58,28 +59,13 @@ async function readOrientation(file: File): Promise<number | undefined> {
   }
 }
 
-/**
- * The embedded preview of a RAW often sits megabytes into the file, past what
- * exifr's chunked reader fetches from a File — it then reports no thumbnail at
- * all and every RAW shows a placeholder. Retry from the full buffer, which has
- * no such reach limit. Thumbnails are only requested for what is (nearly)
- * visible, so this reads a handful of files, not the whole folder.
- */
-async function embeddedPreview(file: File, kind: PhotoKind): Promise<Uint8Array | undefined> {
-  const chunked = await exifr.thumbnail(file).catch(() => undefined)
-  if (chunked || kind === 'jpeg') return chunked as Uint8Array | undefined
-  const full = await exifr.thumbnail(await file.arrayBuffer()).catch(() => undefined)
-  return full as Uint8Array | undefined
-}
-
 async function extractThumb(file: File, kind: PhotoKind, orientation?: number): Promise<Blob | undefined> {
   // Videos have no EXIF preview and createImageBitmap cannot decode them.
   if (kind === 'video') return undefined
   // Embedded EXIF preview first: cheap, and the only option for RAW/HEIC.
   try {
-    const embedded = await embeddedPreview(file, kind)
-    if (embedded) {
-      const blob = new Blob([embedded as BlobPart], { type: 'image/jpeg' })
+    const blob = await embeddedPreview(file, kind)
+    if (blob) {
       // The RAW's orientation tag rarely makes it into the embedded preview —
       // apply it by hand or portrait shots render sideways.
       const o = orientation ?? (await readOrientation(file)) ?? 1

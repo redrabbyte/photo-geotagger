@@ -130,3 +130,82 @@ export function makeTiff(
   }
   return out
 }
+
+/** JPEG-shaped bytes: real SOI/EOI markers around filler, unique per marker. */
+export function fakeJpeg(size: number, fill = 0x41): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(Math.max(8, size)).fill(fill)
+  out.set([0xff, 0xd8, 0xff, 0xe0], 0)
+  out.set([0xff, 0xd9], out.length - 2)
+  return out
+}
+
+/**
+ * A RAW laid out the way a camera does it: the small thumbnail in IFD1, the
+ * real preview behind a SubIFD pointer (0x014A) and megabytes into the file —
+ * i.e. exactly where a chunked EXIF parse cannot see it.
+ */
+export function makeRawWithPreview(
+  opts: {
+    previewBytes?: number
+    thumbBytes?: number
+    previewAt?: number
+    thumbAt?: number
+    /** Omit the SubIFD preview, leaving only IFD1's thumbnail. */
+    noSubIfd?: boolean
+    /** Point the SubIFD at bytes that are not a JPEG (a stale pointer). */
+    breakSubIfd?: boolean
+    bigEndian?: boolean
+  } = {}
+): { bytes: Uint8Array<ArrayBuffer>; preview: Uint8Array; thumb: Uint8Array } {
+  const thumbAt = opts.thumbAt ?? 64 * 1024
+  const previewAt = opts.previewAt ?? 2 * 1024 * 1024
+  const thumb = fakeJpeg(opts.thumbBytes ?? 8 * 1024, 0x54)
+  const preview = fakeJpeg(opts.previewBytes ?? 700 * 1024, 0x50)
+  const total = previewAt + preview.length + 4096
+  const bytes = new Uint8Array(total)
+  const view = new DataView(bytes.buffer)
+  const le = !opts.bigEndian
+  const u16 = (at: number, n: number) => view.setUint16(at, n, le)
+  const u32 = (at: number, n: number) => view.setUint32(at, n, le)
+
+  const IFD0 = 8
+  const IFD1 = 38
+  const SUB = 80
+  bytes.set(new TextEncoder().encode(le ? 'II' : 'MM'), 0)
+  u16(2, 42)
+  u32(4, IFD0)
+
+  // IFD0: image size and the SubIFD pointer, then the chain to IFD1.
+  u16(IFD0, 2)
+  const rec = (at: number, tag: number, type: number, count: number, slot: number) => {
+    u16(at, tag)
+    u16(at + 2, type)
+    u32(at + 4, count)
+    if (type === 3) {
+      u16(at + 8, slot) // SHORT values sit in the high half on big-endian too
+      u16(at + 10, 0)
+    } else {
+      u32(at + 8, slot)
+    }
+  }
+  rec(IFD0 + 2, 0x0100, 3, 1, 6000)
+  rec(IFD0 + 14, 0x014a, 4, 1, opts.noSubIfd ? 0 : SUB)
+  u32(IFD0 + 26, IFD1)
+
+  // IFD1: the small thumbnail every JPEG-shaped parser finds.
+  u16(IFD1, 3)
+  rec(IFD1 + 2, 0x0201, 4, 1, thumbAt)
+  rec(IFD1 + 14, 0x0202, 4, 1, thumb.length)
+  rec(IFD1 + 26, 0x0103, 3, 1, 6)
+  u32(IFD1 + 38, 0)
+
+  // SubIFD: the full preview, far away.
+  u16(SUB, 2)
+  rec(SUB + 2, 0x0201, 4, 1, opts.breakSubIfd ? previewAt + 32 : previewAt)
+  rec(SUB + 14, 0x0202, 4, 1, preview.length)
+  u32(SUB + 26, 0)
+
+  bytes.set(thumb, thumbAt)
+  if (!opts.breakSubIfd) bytes.set(preview, previewAt)
+  return { bytes, preview, thumb }
+}
