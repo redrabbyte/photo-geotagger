@@ -150,6 +150,21 @@ export function WriteBar() {
         </label>
       )}
 
+      {settings.writeMode === 'exiftool' && (
+        <label
+          className="checkbox-row"
+          title="Experimental: write GPS and corrected time into TIFF-based RAW files (ARW, NEF, CR2, DNG) directly in the browser — no ExifTool download, sub-second writes. Existing data never moves: new metadata is appended and pointers repointed. Files that aren't TIFF-based (RAF, CR3, HEIC) or fail verification automatically take the ExifTool path. Keeping Backup originals on is recommended while this is experimental."
+        >
+          <input
+            type="checkbox"
+            checked={settings.fastRaw}
+            onChange={(e) => useStore.getState().setSettings({ fastRaw: e.target.checked })}
+            disabled={writing}
+          />
+          Experimental fast RAW
+        </label>
+      )}
+
       {settings.writeMode === 'exiftool' && sidecarEmbedCount > 0 && (
         <label
           className="checkbox-row"

@@ -1,0 +1,99 @@
+import { describe, it, expect } from 'vitest'
+import exifr from 'exifr'
+import { TiffStructureError, rewriteTiffMetadata } from '../exif/tiffWriter'
+import { makeTiff } from './fixtures'
+
+
+const asBuffer = (b: Uint8Array): ArrayBuffer => b.buffer as ArrayBuffer
+
+describe('rewriteTiffMetadata', () => {
+  const gps = { lat: 48.8581, lon: 2.2947, ele: 35 }
+
+  it('adds a GPS IFD by appending and repointing IFD0', async () => {
+    const original = makeTiff()
+    const rewritten = rewriteTiffMetadata(asBuffer(original), { gps })
+
+    // Every original byte except the 4-byte IFD0 pointer is untouched.
+    const stripAt = original.length - 26
+    expect(rewritten.slice(stripAt, original.length)).toEqual(original.slice(stripAt))
+    expect(rewritten.slice(8, original.length)).toEqual(original.slice(8))
+
+    const parsed = await exifr.parse(asBuffer(rewritten), { tiff: true, gps: true, exif: true })
+    expect(parsed.latitude).toBeCloseTo(gps.lat, 4)
+    expect(parsed.longitude).toBeCloseTo(gps.lon, 4)
+    expect(parsed.GPSAltitude).toBeCloseTo(35, 1)
+    // Untouched capture time still parses.
+    expect(parsed.DateTimeOriginal).toBeInstanceOf(Date)
+  })
+
+  it('replaces an existing GPS pointer without growing IFD0 again', async () => {
+    const original = makeTiff()
+    const once = rewriteTiffMetadata(asBuffer(original), { gps })
+    const twice = rewriteTiffMetadata(asBuffer(once), { gps: { lat: -33.8568, lon: 151.2153 } })
+    const parsed = await exifr.parse(asBuffer(twice), { tiff: true, gps: true })
+    expect(parsed.latitude).toBeCloseTo(-33.8568, 4)
+    expect(parsed.longitude).toBeCloseTo(151.2153, 4)
+  })
+
+  it('patches the capture time in place and appends missing OffsetTime tags', async () => {
+    const original = makeTiff()
+    const t = Date.UTC(2026, 6, 4, 15, 0, 0)
+    const rewritten = rewriteTiffMetadata(asBuffer(original), {
+      time: { wallClockMs: t, tzOffsetMin: 120 },
+    })
+    const parsed = await exifr.parse(asBuffer(rewritten), { tiff: true, exif: true })
+    const dto = parsed.DateTimeOriginal as Date
+    expect(
+      Date.UTC(dto.getFullYear(), dto.getMonth(), dto.getDate(), dto.getHours(), dto.getMinutes(), dto.getSeconds())
+    ).toBe(t)
+    expect(parsed.OffsetTimeOriginal).toBe('+02:00')
+    expect(new TextDecoder('latin1').decode(rewritten)).toContain('RAW-STRIP-DATA-DO-NOT-MOVE')
+  })
+
+  it('patches existing OffsetTime tags without appending anything', () => {
+    const original = makeTiff({ offsetTime: true })
+    const rewritten = rewriteTiffMetadata(asBuffer(original), {
+      time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0), tzOffsetMin: -300 },
+    })
+    // Pure in-place patching: same length (no tail was needed).
+    expect(rewritten.length).toBe(original.length)
+    const text = new TextDecoder('latin1').decode(rewritten)
+    expect(text).toContain('-05:00')
+    expect(text).not.toContain('+09:00')
+    expect(text).toContain('2026:07:04 15:00:00')
+  })
+
+  it('bails with TiffStructureError on anything not understood', () => {
+    const gpsOnly = { gps }
+    // Not a TIFF (e.g. RAF/CR3/HEIC magic).
+    expect(() => rewriteTiffMetadata(new ArrayBuffer(64), gpsOnly)).toThrow(TiffStructureError)
+    const raf = new TextEncoder().encode('FUJIFILMCCD-RAW 0201FF129502').buffer as ArrayBuffer
+    expect(() => rewriteTiffMetadata(raf, gpsOnly)).toThrow(TiffStructureError)
+    // Time correction without an Exif IFD.
+    const noExif = new Uint8Array(26)
+    noExif.set(new TextEncoder().encode('II'))
+    new DataView(noExif.buffer).setUint16(2, 42, true)
+    new DataView(noExif.buffer).setUint32(4, 8, true)
+    new DataView(noExif.buffer).setUint16(8, 1, true)
+    new DataView(noExif.buffer).setUint16(10, 0x0100, true) // ImageWidth, not ExifIFD
+    new DataView(noExif.buffer).setUint16(12, 4, true)
+    new DataView(noExif.buffer).setUint32(14, 1, true)
+    expect(() =>
+      rewriteTiffMetadata(noExif.buffer as ArrayBuffer, { time: { wallClockMs: 0, tzOffsetMin: 0 } })
+    ).toThrow(TiffStructureError)
+  })
+
+  it('writes GPS and time together', async () => {
+    const original = makeTiff()
+    const t = Date.UTC(2026, 6, 4, 15, 0, 0)
+    const rewritten = rewriteTiffMetadata(asBuffer(original), {
+      gps,
+      time: { wallClockMs: t, tzOffsetMin: 120 },
+    })
+    const parsed = await exifr.parse(asBuffer(rewritten), { tiff: true, gps: true, exif: true })
+    expect(parsed.latitude).toBeCloseTo(gps.lat, 4)
+    const dto = parsed.DateTimeOriginal as Date
+    expect(dto.getUTCFullYear?.() ?? dto.getFullYear()).toBe(2026)
+    expect(parsed.OffsetTimeOriginal).toBe('+02:00')
+  })
+})

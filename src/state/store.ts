@@ -77,6 +77,8 @@ export interface AppSettings {
   embedSidecarGps: boolean
   /** Experimental: write MP4/MOV metadata directly in JS (fallback: ExifTool). */
   fastMp4: boolean
+  /** Experimental: write TIFF-based RAW metadata directly in JS (fallback: ExifTool). */
+  fastRaw: boolean
   /** Which file types folder import picks up. */
   importFilters: ImportFilters
   match: MatchSettings
@@ -214,6 +216,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   parallelExiftool: false,
   embedSidecarGps: false,
   fastMp4: false,
+  fastRaw: false,
   importFilters: { jpeg: true, raw: true, xmp: true, video: true },
   match: DEFAULT_MATCH_SETTINGS,
   matchSources: { tracks: true, photos: true },

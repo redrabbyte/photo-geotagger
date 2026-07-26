@@ -13,6 +13,7 @@ import { makeBatchEtaEstimator } from './eta'
 import { isFatalWasmError } from './exif/exiftoolRunner'
 import { backupOriginal, readFileBytes, writeFileBytes, writeFileParts } from './fs/safeWrite'
 import { Mp4StructureError, rewriteMp4Metadata } from './exif/mp4Writer'
+import { TiffStructureError, rewriteTiffMetadata } from './exif/tiffWriter'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
@@ -38,6 +39,8 @@ export interface WriteOptions {
   embedSidecarGps?: boolean
   /** Experimental: edit MP4/MOV boxes directly in JS; falls back to ExifTool. */
   fastMp4?: boolean
+  /** Experimental: edit TIFF-based RAWs directly in JS; falls back to ExifTool. */
+  fastRaw?: boolean
   /** Checked between files: when true, no further file is started. */
   shouldStop?: () => boolean
   onProgress?: (done: number, total: number, current: string, etaMs?: number) => void
@@ -398,6 +401,61 @@ async function tryWriteVideoFast(
 }
 
 /**
+ * Experimental fast RAW path: append-and-repoint edit of TIFF-based files
+ * (ARW/NEF/CR2/DNG) in JS. Returns false when the container isn't understood
+ * OR the rewritten bytes fail verification — the ExifTool path then takes
+ * over, so a false negative only costs speed, never correctness.
+ */
+async function tryWriteRawFast(
+  photo: Photo,
+  source: Source,
+  gps: GeoPoint | undefined,
+  backup: boolean,
+  time?: TimeCorrection,
+  dirs?: DirCache
+): Promise<boolean> {
+  if (!photo.fileHandle) throw new Error('Missing file handle')
+  const original = await readFileBytes(photo.fileHandle)
+  let rewritten: Uint8Array
+  try {
+    rewritten = rewriteTiffMetadata(original, { gps, time })
+  } catch (err) {
+    if (err instanceof TiffStructureError) return false
+    throw err
+  }
+  // Verify with an independent parser before anything touches the original.
+  let parsed: Record<string, unknown> | undefined
+  try {
+    parsed = await exifr.parse(rewritten.buffer as ArrayBuffer, { tiff: true, exif: true, gps: true })
+  } catch {
+    parsed = undefined
+  }
+  if (gps) {
+    const lat = parsed?.latitude
+    const lon = parsed?.longitude
+    if (
+      typeof lat !== 'number' ||
+      typeof lon !== 'number' ||
+      Math.abs(lat - gps.lat) > 1e-4 ||
+      Math.abs(lon - gps.lon) > 1e-4
+    ) {
+      return false
+    }
+  }
+  if (time) {
+    const dto = parsed?.DateTimeOriginal
+    if (!(dto instanceof Date)) return false
+    const wallClock = Date.UTC(
+      dto.getFullYear(), dto.getMonth(), dto.getDate(),
+      dto.getHours(), dto.getMinutes(), dto.getSeconds()
+    )
+    if (Math.abs(wallClock - time.wallClockMs) > 1000) return false
+  }
+  await backupThenWrite(photo, source, rewritten, backup, dirs)
+  return true
+}
+
+/**
  * Write one photo's assigned GPS. Returns which target was written.
  * Mode 'safe': JPEG in place (pure JS), everything else gets an XMP sidecar.
  * Mode 'exiftool': every format written in place via ExifTool WASM.
@@ -424,6 +482,11 @@ export async function writePhoto(
         return { target: 'exif', timeCorrection: time }
       }
     }
+    if (photo.kind === 'raw' && options.fastRaw) {
+      if (await tryWriteRawFast(photo, source, gps, options.backupOriginals, time, dirs)) {
+        return { target: 'exif', timeCorrection: time }
+      }
+    }
     await writeViaExiftool(photo, source, gps, options.backupOriginals, time, dirs)
     return { target: 'exif', timeCorrection: time }
   }
@@ -446,6 +509,11 @@ export async function writeTimeOnlyPhoto(
     if (!photo.fileHandle) throw new Error('Missing file handle')
     if (photo.kind === 'video' && options.fastMp4) {
       if (await tryWriteVideoFast(photo, source, undefined, options.backupOriginals, time, dirs)) {
+        return 'exif'
+      }
+    }
+    if (photo.kind === 'raw' && options.fastRaw) {
+      if (await tryWriteRawFast(photo, source, undefined, options.backupOriginals, time, dirs)) {
         return 'exif'
       }
     }

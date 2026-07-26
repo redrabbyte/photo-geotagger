@@ -14,7 +14,8 @@ import {
   writeBatchViaExiftool,
 } from '../exif/exiftoolRunner'
 import { isRecoverableWriteError } from '../writePipeline'
-import { makeJpegWithExif } from './fixtures'
+import { makeJpegWithExif, makeTiff } from './fixtures'
+import { rewriteTiffMetadata } from '../exif/tiffWriter'
 
 const require = createRequire(import.meta.url)
 
@@ -170,5 +171,33 @@ describe('exiftool runner', () => {
     expect(verify.success, verify.error).toBe(true)
     const entry = (JSON.parse(verify.output) as Array<Record<string, unknown>>)[0]
     expect(entry.DateTimeOriginal).toBe('2026:06:01 13:34:56')
+  })
+
+  it('fast-RAW output is accepted by the real ExifTool', { timeout: 120_000 }, async () => {
+    // The strongest cross-check available: the pure-JS TIFF writer's output
+    // parsed by the reference implementation itself.
+    const rewritten = rewriteTiffMetadata(makeTiff().buffer, {
+      gps: { lat: 48.8581, lon: 2.2947, ele: 35 },
+      time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0), tzOffsetMin: 120 },
+    })
+    const runner = new ExiftoolRunner(nodeFetch)
+    const read = await parseViaExiftool(runner, 'photo.tif', rewritten, [
+      '-json',
+      '-n',
+      '-GPSLatitude',
+      '-GPSLongitude',
+      '-GPSAltitude',
+      '-DateTimeOriginal',
+      '-OffsetTimeOriginal',
+      '-validate',
+      '-Warning',
+    ])
+    expect(read.success, read.error).toBe(true)
+    const tags = (JSON.parse(read.output) as Array<Record<string, unknown>>)[0]
+    expect(tags.GPSLatitude as number).toBeCloseTo(48.8581, 4)
+    expect(tags.GPSLongitude as number).toBeCloseTo(2.2947, 4)
+    expect(tags.GPSAltitude as number).toBeCloseTo(35, 1)
+    expect(tags.DateTimeOriginal).toBe('2026:07:04 15:00:00')
+    expect(tags.OffsetTimeOriginal).toBe('+02:00')
   })
 })
