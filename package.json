@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@tmcw/togeojson": "^7.1.2",
@@ -29,6 +30,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "happy-dom": "^20.10.6",
     "oxlint": "^1.71.0",
+    "patch-package": "^8.0.1",
     "playwright-core": "^1.61.1",
     "tsx": "^4.23.1",
     "typescript": "~6.0.2",
