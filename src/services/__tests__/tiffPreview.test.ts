@@ -29,13 +29,30 @@ class CountingBlob extends Blob {
 
 const blobOf = (bytes: Uint8Array) => new CountingBlob([bytes.slice()])
 
+/**
+ * Byte-exact comparison. expect().toEqual() walks typed arrays element by
+ * element and builds a diff, which takes seconds on a preview-sized array —
+ * enough to blow the test timeout on a slow runner.
+ */
+async function expectBytes(actual: Blob | undefined, expected: Uint8Array): Promise<void> {
+  expect(actual).toBeDefined()
+  expect(actual!.size).toBe(expected.length)
+  const bytes = new Uint8Array(await actual!.arrayBuffer())
+  let differsAt = -1
+  for (let i = 0; i < expected.length; i++) {
+    if (bytes[i] !== expected[i]) {
+      differsAt = i
+      break
+    }
+  }
+  expect(differsAt, differsAt < 0 ? '' : `bytes differ at ${differsAt}`).toBe(-1)
+}
+
 describe('readTiffPreview', () => {
   it('finds the preview behind a SubIFD pointer, megabytes into the file', async () => {
     const raw = makeRawWithPreview()
     const found = await readTiffPreview(blobOf(raw.bytes))
-    expect(found).toBeDefined()
-    expect(found!.size).toBe(raw.preview.length)
-    expect(new Uint8Array(await found!.arrayBuffer())).toEqual(raw.preview)
+    await expectBytes(found, raw.preview)
     expect(found!.type).toBe('image/jpeg')
   })
 
@@ -52,36 +69,33 @@ describe('readTiffPreview', () => {
 
   it('falls back to the IFD1 thumbnail when there is no SubIFD preview', async () => {
     const raw = makeRawWithPreview({ noSubIfd: true })
-    const found = await readTiffPreview(blobOf(raw.bytes))
-    expect(new Uint8Array(await found!.arrayBuffer())).toEqual(raw.thumb)
+    await expectBytes(await readTiffPreview(blobOf(raw.bytes)), raw.thumb)
   })
 
   it('ignores a pointer that does not lead to a JPEG', async () => {
     // A stale/garbage offset must not produce a broken image: verify the SOI
     // marker first, then fall back to the candidate that does check out.
     const raw = makeRawWithPreview({ breakSubIfd: true })
-    const found = await readTiffPreview(blobOf(raw.bytes))
-    expect(new Uint8Array(await found!.arrayBuffer())).toEqual(raw.thumb)
+    await expectBytes(await readTiffPreview(blobOf(raw.bytes)), raw.thumb)
   })
 
   it('prefers a preview that is cheap to decode over a full-resolution one', async () => {
-    // 20 MB "JpgFromRaw" in the SubIFD, 900 kB preview in IFD1: take the small
+    // 6 MB "JpgFromRaw" in the SubIFD, 300 kB preview in IFD1: take the small
     // one — it is plenty for a 320px tile and a side panel.
-    const raw = makeRawWithPreview({ previewBytes: 20 * 1024 * 1024, thumbBytes: 900 * 1024 })
+    const raw = makeRawWithPreview({ previewBytes: 6 * 1024 * 1024, thumbBytes: 300 * 1024 })
     const found = await readTiffPreview(blobOf(raw.bytes))
     expect(found!.size).toBe(raw.thumb.length)
   })
 
   it('takes the only preview there is, even oversized', async () => {
-    const raw = makeRawWithPreview({ previewBytes: 12 * 1024 * 1024, thumbBytes: 8 })
+    const raw = makeRawWithPreview({ previewBytes: 6 * 1024 * 1024, thumbBytes: 8 })
     const found = await readTiffPreview(blobOf(raw.bytes))
     expect(found!.size).toBe(raw.preview.length)
   })
 
   it('handles big-endian files', async () => {
     const raw = makeRawWithPreview({ bigEndian: true })
-    const found = await readTiffPreview(blobOf(raw.bytes))
-    expect(new Uint8Array(await found!.arrayBuffer())).toEqual(raw.preview)
+    await expectBytes(await readTiffPreview(blobOf(raw.bytes)), raw.preview)
   })
 
   it('returns nothing for files without a preview or without TIFF structure', async () => {

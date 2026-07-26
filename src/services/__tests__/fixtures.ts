@@ -160,7 +160,7 @@ export function makeRawWithPreview(
   const thumbAt = opts.thumbAt ?? 64 * 1024
   const previewAt = opts.previewAt ?? 2 * 1024 * 1024
   const thumb = fakeJpeg(opts.thumbBytes ?? 8 * 1024, 0x54)
-  const preview = fakeJpeg(opts.previewBytes ?? 700 * 1024, 0x50)
+  const preview = fakeJpeg(opts.previewBytes ?? 64 * 1024, 0x50)
   const total = previewAt + preview.length + 4096
   const bytes = new Uint8Array(total)
   const view = new DataView(bytes.buffer)
