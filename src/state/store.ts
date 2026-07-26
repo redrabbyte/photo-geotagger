@@ -222,8 +222,11 @@ const SETTINGS_KEY = 'photo-geotagger.settings.v1'
 export { LIMIT_RANGES, defaultLimits }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  writeMode: 'safe',
-  backupOriginals: false,
+  // Writing into the files is what most people are here for; sidecars are the
+  // fallback for anyone who wants their originals left byte-identical. Backups
+  // are on to match: the first write of a RAW then leaves a .orig behind.
+  writeMode: 'exiftool',
+  backupOriginals: true,
   writeCorrectedTime: false,
   embedSidecarGps: false,
   fastMp4: false,

@@ -102,11 +102,11 @@ export function WriteBar() {
         </span>
       </span>
 
-      <span className="write-mode" title="How GPS is written back to your files">
+      <span className="write-mode" title="Where the position ends up: inside the files themselves, or in sidecar files next to the ones this app cannot rewrite on its own">
         <label>Write mode</label>
         <select value={settings.writeMode} onChange={(e) => onModeChange(e.target.value as WriteMode)} disabled={writing}>
-          <option value="safe">Safe — JPEG in place, XMP sidecars for RAW/HEIC</option>
-          <option value="exiftool">ExifTool (WASM) — write into any format incl. RAW</option>
+          <option value="exiftool">Into the files — JPEG, RAW and video directly</option>
+          <option value="safe">Sidecars — JPEG directly, .xmp next to RAW/HEIC/video</option>
         </select>
       </span>
 

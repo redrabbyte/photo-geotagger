@@ -43,8 +43,8 @@ Tested in Android and Windows Chrome. No guarantees elsewhere :D
 
   | Mode | JPEG | RAW / HEIC | Video (MP4/MOV) |
   |---|---|---|---|
-  | **Safe** (default) | GPS written into the file (no recompression) | `.xmp` sidecar next to the original (Lightroom/darktable-compatible) | `.xmp` sidecar |
-  | **ExifTool** | written into the file | written into the file (real ExifTool, running in the browser) | written into the video's standard location metadata — what Google Photos, Apple Photos and video players read |
+  | **Into the files** (default) | written into the file (no recompression) | written into the file (pure JS for TIFF-based RAWs, otherwise real ExifTool running in the browser) | written into the video's standard location metadata — what Google Photos, Apple Photos and video players read |
+  | **Sidecars** | written into the file | `.xmp` sidecar next to the original (Lightroom/darktable-compatible) | `.xmp` sidecar |
 
   Batch writes show live progress with a time estimate and a stop button.
   Videos are always written after all photos.
