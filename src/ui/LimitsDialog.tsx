@@ -1,8 +1,17 @@
 import { useMemo } from 'react'
 import type { PhotoKind } from '../domain/types'
 import { LIMIT_RANGES, defaultLimits, useStore } from '../state/store'
-import { estimatePeakRam, formatBytes, type WriteLimits } from '../services/ramEstimate'
-import { prepareExiftool } from '../services/appActions'
+import {
+  estimatePeakRam,
+  fitLimits,
+  formatBytes,
+  limitCeilings,
+  logicalCores,
+  ramBudgetBytes,
+  type RamEstimate,
+  type WriteLimits,
+} from '../services/ramEstimate'
+import { limitsLoadState, prepareExiftool } from '../services/appActions'
 import { Modal } from './Modal'
 
 /** One limit as a row of choices, each labelled with what it would cost. */
@@ -10,7 +19,9 @@ function LimitChoices({
   value,
   min,
   max,
-  recommended,
+  auto,
+  ceiling,
+  cores,
   estimateFor,
   onPick,
   disabled,
@@ -18,7 +29,9 @@ function LimitChoices({
   value: number
   min: number
   max: number
-  recommended: number
+  auto: number
+  ceiling: number
+  cores: number
   estimateFor: (candidate: number) => string | undefined
   onPick: (value: number) => void
   disabled?: boolean
@@ -28,17 +41,28 @@ function LimitChoices({
     <div className="limit-choices">
       {values.map((v) => {
         const cost = estimateFor(v)
+        const overCores = v > ceiling
         return (
           <button
             key={v}
-            className={`limit-choice${v === value ? ' selected' : ''}`}
+            className={`limit-choice${v === value ? ' selected' : ''}${overCores ? ' over-cores' : ''}`}
             onClick={() => onPick(v)}
             disabled={disabled}
-            title={v === recommended ? 'Recommended for this device' : undefined}
+            title={
+              overCores
+                ? `More than the ${cores} logical core${cores === 1 ? '' : 's'} on this device — costs memory without adding speed`
+                : v === auto
+                  ? 'What the app picks by itself for this device and the loaded files'
+                  : undefined
+            }
           >
             <span className="limit-value">
               {v}
-              {v === recommended && <span className="limit-star" title="Recommended for this device">★</span>}
+              {v === auto && (
+                <span className="limit-star" title="Automatic choice">
+                  ★
+                </span>
+              )}
             </span>
             {cost && <span className="limit-cost">{cost}</span>}
           </button>
@@ -48,38 +72,72 @@ function LimitChoices({
   )
 }
 
+/** Why the ExifTool worker setting cannot matter for this import. */
+function workersMoot(reason: RamEstimate['wasmUnusedReason']): string | undefined {
+  switch (reason) {
+    case 'fast-paths':
+      return ' The experimental fast paths write every RAW and clip here in JS, which makes this setting irrelevant — it only applies to files that fall back to ExifTool.'
+    case 'safe-mode':
+      return ' Safe mode never runs ExifTool, so this setting does nothing until you switch modes.'
+    case 'no-such-files':
+      return ' Only JPEGs are loaded, and those always take the pure-JS path.'
+    default:
+      return undefined
+  }
+}
+
 /**
  * Write limits with the memory they cost for the files currently loaded, so the
  * trade-off is visible instead of guessed. Estimates are per setting value and
  * hold the other setting at its current choice.
+ *
+ * The app fits the limits itself while the user has not chosen: modest defaults
+ * during the import (sizes are still arriving, so the estimate keeps rising),
+ * then the widest setting that stays inside the device's memory budget.
  */
 export function LimitsDialog({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.settings)
   const photos = useStore((s) => s.photos)
+  const scanning = useStore((s) => s.scanning)
   const writing = useStore((s) => s.writeProgress) !== undefined
-  const recommended = useMemo(() => defaultLimits(), [])
+  const cores = useMemo(() => logicalCores(), [])
+  const ceilings = useMemo(() => limitCeilings(), [])
+  const budget = useMemo(() => ramBudgetBytes(), [])
 
-  // Only files that would actually be written matter for the peak.
+  // Only files that would actually be written matter for the peak. Sizes arrive
+  // with each photo's metadata scan, so an import in progress has fewer of them
+  // than it will have — which is what makes the numbers below move.
+  const all = useMemo(() => Object.values(photos), [photos])
   const files = useMemo(
     () =>
-      Object.values(photos)
+      all
         .filter((p) => p.sizeBytes > 0)
         .map((p) => ({ sizeBytes: p.sizeBytes, kind: p.kind as PhotoKind })),
-    [photos]
+    [all]
   )
+  // The same rule the automatic fit waits for — one source of truth.
+  const { measured, settled } = limitsLoadState(all, scanning)
   const largest = useMemo(() => files.reduce((n, f) => Math.max(n, f.sizeBytes), 0), [files])
 
-  const estimate = (limits: WriteLimits) =>
-    estimatePeakRam({
-      files,
-      mode: settings.writeMode,
-      fastRaw: settings.fastRaw,
-      fastMp4: settings.fastMp4,
-      limits,
-    })
+  const forFiles = { files, mode: settings.writeMode, fastRaw: settings.fastRaw, fastMp4: settings.fastMp4 }
+  const estimate = (limits: WriteLimits) => estimatePeakRam({ ...forFiles, limits })
+
+  const auto = useMemo(
+    () =>
+      fitLimits({
+        ...forFiles,
+        budgetBytes: budget,
+        ceilings,
+        workersWhenIdle: defaultLimits().exiftoolWorkers,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [files, settings.writeMode, settings.fastRaw, settings.fastMp4, budget, ceilings]
+  )
 
   const setLimits = (patch: Partial<WriteLimits>) => {
-    useStore.getState().setSettings({ limits: { ...settings.limits, ...patch } })
+    // Picking a value by hand switches the automatic fitting off — it must not
+    // silently overwrite the choice a moment later.
+    useStore.getState().setSettings({ limits: { ...settings.limits, ...patch }, limitsAuto: false })
     // Resize/warm the pool right away so the next write uses the new width.
     if (patch.exiftoolWorkers !== undefined) prepareExiftool()
   }
@@ -88,15 +146,23 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
   const haveFiles = files.length > 0
   const costLabel = (limits: WriteLimits) =>
     haveFiles ? `≈ ${formatBytes(estimate(limits).totalBytes)}` : undefined
+  const updating = !settled && settings.limitsAuto
+  const atAuto =
+    settings.limitsAuto &&
+    (!haveFiles ||
+      (auto.writeConcurrency === settings.limits.writeConcurrency &&
+        auto.exiftoolWorkers === settings.limits.exiftoolWorkers))
 
   return (
     <Modal className="limits-dialog" onClose={onClose}>
       <h3>Write limits</h3>
       <p className="muted small">
         More parallelism is faster but holds more files in memory at once. The figures below are
-        rough estimates for the {files.length} file{files.length === 1 ? '' : 's'} loaded
+        rough estimates for the {measured === all.length ? files.length : `${files.length} of ${all.length}`}{' '}
+        file{files.length === 1 ? '' : 's'} loaded
         {haveFiles && ` (largest ${formatBytes(largest)})`} — enough to compare settings, not exact.
-        ★ marks what this device gets by default.
+        ★ marks what the app picks by itself, the widest setting that stays under{' '}
+        {formatBytes(budget)} on this device.
       </p>
 
       <div className="limit-row">
@@ -104,13 +170,17 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
           Files written at once
           <span className="muted small">
             Each one in flight holds its bytes in memory while being rewritten.
+            {settings.writeMode !== 'exiftool' &&
+              ' Safe mode writes sidecars at a fixed width — this applies in ExifTool mode.'}
           </span>
         </label>
         <LimitChoices
           value={settings.limits.writeConcurrency}
           min={LIMIT_RANGES.writeConcurrency.min}
           max={LIMIT_RANGES.writeConcurrency.max}
-          recommended={recommended.writeConcurrency}
+          auto={auto.writeConcurrency}
+          ceiling={ceilings.writeConcurrency}
+          cores={cores}
           estimateFor={(v) => costLabel({ ...settings.limits, writeConcurrency: v })}
           onPick={(v) => setLimits({ writeConcurrency: v })}
           disabled={writing}
@@ -122,14 +192,16 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
           ExifTool workers
           <span className="muted small">
             Only used for files the WASM path writes — each keeps a ~25 MB interpreter resident.
-            {current.wasmUnused && ' Nothing in this import needs it right now.'}
+            {workersMoot(current.wasmUnusedReason)}
           </span>
         </label>
         <LimitChoices
           value={settings.limits.exiftoolWorkers}
           min={LIMIT_RANGES.exiftoolWorkers.min}
           max={LIMIT_RANGES.exiftoolWorkers.max}
-          recommended={recommended.exiftoolWorkers}
+          auto={auto.exiftoolWorkers}
+          ceiling={ceilings.exiftoolWorkers}
+          cores={cores}
           estimateFor={(v) => costLabel({ ...settings.limits, exiftoolWorkers: v })}
           onPick={(v) => setLimits({ exiftoolWorkers: v })}
           disabled={writing}
@@ -148,11 +220,29 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
           <span className="muted">Load a folder to see what each setting would cost.</span>
         )}
       </p>
+      {updating && (
+        <p className="small limits-updating">
+          <span className="spinner-dot" /> Limits updating — {measured} of {all.length} file
+          {all.length === 1 ? '' : 's'} measured. The estimate still grows; the automatic choice is
+          applied once loading finishes.
+        </p>
+      )}
+      {!settings.limitsAuto && (
+        <p className="muted small">
+          Set by hand — the automatic fit is off for this session.
+        </p>
+      )}
       {writing && <p className="muted small">Limits are locked while a write is running.</p>}
 
       <div className="modal-actions">
-        <button onClick={() => setLimits(recommended)} disabled={writing}>
-          Reset to recommended
+        <button
+          disabled={writing || atAuto}
+          title={`Let the app choose: the widest limits whose estimated peak stays under ${formatBytes(budget)}, capped at this device's ${cores} logical core${cores === 1 ? '' : 's'}`}
+          onClick={() =>
+            useStore.getState().setSettings({ limitsAuto: true, limits: haveFiles ? auto : defaultLimits() })
+          }
+        >
+          Use automatic
         </button>
         <button className="primary" onClick={onClose}>
           Done

@@ -69,6 +69,17 @@ export interface RamEstimate {
   workerBytes: number
   /** True when no file would go through the WASM interpreter at all. */
   wasmUnused: boolean
+  /** Why it stays unused — the UI explains a pointless setting differently. */
+  wasmUnusedReason?: 'no-files' | 'safe-mode' | 'fast-paths' | 'no-such-files'
+}
+
+/** Why nothing in this import would reach the WASM interpreter. */
+function wasmUnusedReason(input: RamEstimateInput): RamEstimate['wasmUnusedReason'] {
+  if (input.files.length === 0) return 'no-files'
+  if (input.mode !== 'exiftool') return 'safe-mode'
+  // In ExifTool mode a JPEG never gets there; everything else only stays away
+  // because a fast path took it over.
+  return input.files.some((f) => f.kind !== 'jpeg') ? 'fast-paths' : 'no-such-files'
 }
 
 export function estimatePeakRam(input: RamEstimateInput): RamEstimate {
@@ -87,12 +98,115 @@ export function estimatePeakRam(input: RamEstimateInput): RamEstimate {
     .sort((a, b) => b - a)
     .slice(0, Math.max(0, slots))
     .reduce((n, c) => n + c, 0)
-  return { totalBytes: workerBytes + biggestVideo + inFlight, workerBytes, wasmUnused: !anyExiftool }
+  return {
+    totalBytes: workerBytes + biggestVideo + inFlight,
+    workerBytes,
+    wasmUnused: !anyExiftool,
+    wasmUnusedReason: anyExiftool ? undefined : wasmUnusedReason(input),
+  }
 }
 
-/** "≈ 240 MB" / "≈ 1.2 GB" — coarse on purpose, this is an estimate. */
+/** Coarse phone check: far less RAM, and a killed tab loses the whole session. */
+export function isMobileDevice(): boolean {
+  return typeof navigator !== 'undefined' && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+}
+
+/** Logical cores, with a conservative guess when the browser hides them. */
+export function logicalCores(): number {
+  const n = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined
+  return Math.max(1, Math.floor(typeof n === 'number' && n > 0 ? n : 4))
+}
+
+export const LIMIT_RANGES = {
+  exiftoolWorkers: { min: 1, max: 6 },
+  writeConcurrency: { min: 1, max: 12 },
+} as const
+
+const clampTo = (v: number, range: { min: number; max: number }): number =>
+  Math.min(range.max, Math.max(range.min, v))
+
+/**
+ * Highest values worth offering on this device. Both knobs buy CPU-bound work —
+ * a WASM interpreter, a JS rewrite of a whole file — so beyond the number of
+ * logical cores they add memory without adding throughput. Workers leave one
+ * core to the main thread, which keeps decoding previews during a write.
+ */
+export function limitCeilings(cores = logicalCores()): WriteLimits {
+  return {
+    writeConcurrency: clampTo(cores, LIMIT_RANGES.writeConcurrency),
+    exiftoolWorkers: clampTo(cores - 1, LIMIT_RANGES.exiftoolWorkers),
+  }
+}
+
+/** Memory the automatic choice may plan for: phones get far less headroom. */
+export function ramBudgetBytes(mobile = isMobileDevice()): number {
+  return (mobile ? 2 : 8) * 1024 * 1024 * 1024
+}
+
+/**
+ * Starting limits, before anything is known about the files. Deliberately
+ * modest: the automatic fit widens them once sizes are in (see fitLimits).
+ */
+export function defaultLimits(): WriteLimits {
+  const ceilings = limitCeilings()
+  const cap = (l: WriteLimits): WriteLimits => ({
+    exiftoolWorkers: Math.min(l.exiftoolWorkers, ceilings.exiftoolWorkers),
+    writeConcurrency: Math.min(l.writeConcurrency, ceilings.writeConcurrency),
+  })
+  if (isMobileDevice()) return cap({ exiftoolWorkers: 2, writeConcurrency: 4 })
+  const memGb = (navigator as Navigator & { deviceMemory?: number })?.deviceMemory ?? 4
+  return cap({
+    exiftoolWorkers: Math.max(2, Math.min(4, Math.floor(logicalCores() / 2), Math.floor(memGb / 2))),
+    writeConcurrency: 6,
+  })
+}
+
+export interface FitLimitsInput extends Omit<RamEstimateInput, 'limits'> {
+  /** Estimated peak the result must stay under. */
+  budgetBytes: number
+  /** Per-knob ceiling for this device. */
+  ceilings: WriteLimits
+  /** Worker count to keep when nothing in the import uses the WASM path. */
+  workersWhenIdle: number
+}
+
+/**
+ * The widest limits whose estimated peak still fits the budget — what the app
+ * picks by itself once an import has finished loading and the sizes are known.
+ *
+ * Both knobs move together: an ExifTool worker can only be busy while a file is
+ * in flight, so more workers than files-at-once is memory that never works. If
+ * even the narrowest setting overshoots, that is returned anyway — a single
+ * 2 GB clip cannot be made cheaper, and refusing to write it would be worse.
+ */
+export function fitLimits(input: FitLimitsInput): WriteLimits {
+  const { budgetBytes, ceilings, workersWhenIdle } = input
+  const wasm = !estimatePeakRam({ ...input, limits: ceilings }).wasmUnused
+  const workersFor = (writeConcurrency: number): number =>
+    wasm
+      ? clampTo(Math.min(ceilings.exiftoolWorkers, writeConcurrency), LIMIT_RANGES.exiftoolWorkers)
+      : Math.min(ceilings.exiftoolWorkers, workersWhenIdle)
+
+  const floor = LIMIT_RANGES.writeConcurrency.min
+  const top = Math.max(floor, ceilings.writeConcurrency)
+  for (let wc = top; wc > floor; wc--) {
+    const limits = { writeConcurrency: wc, exiftoolWorkers: workersFor(wc) }
+    if (estimatePeakRam({ ...input, limits }).totalBytes <= budgetBytes) return limits
+  }
+  return { writeConcurrency: floor, exiftoolWorkers: workersFor(floor) }
+}
+
+/**
+ * "240 MB" / "1.2 GB" — coarse on purpose, this is an estimate. Binary units,
+ * so a 20 MiB file reads as the 20 MB the file manager shows and a budget of
+ * 8 GiB reads as "8 GB" rather than "8.6 GB".
+ */
 export function formatBytes(bytes: number): string {
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
-  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`
-  return `${Math.max(1, Math.round(bytes / 1e3))} kB`
+  const KB = 1024
+  if (bytes >= KB ** 3) {
+    const gb = bytes / KB ** 3
+    return `${Number.isInteger(gb) ? gb : gb.toFixed(1)} GB`
+  }
+  if (bytes >= KB ** 2) return `${Math.round(bytes / KB ** 2)} MB`
+  return `${Math.max(1, Math.round(bytes / KB))} kB`
 }

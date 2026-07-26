@@ -6,6 +6,7 @@ import { Inspector } from './ui/Inspector'
 import { SourcesPanel } from './ui/SourcesPanel'
 import { WriteBar } from './ui/WriteBar'
 import { Toasts } from './ui/Toasts'
+import { useAutoLimits } from './ui/useAutoLimits'
 import { fsaSupported } from './services/fs/sources'
 import './App.css'
 
@@ -28,6 +29,7 @@ export default function App() {
   // the map. On mobile the media query stacks everything full-width.
   const [leftW, setLeftW] = usePanelWidth('panelWidthLeft', 280)
   const [rightW, setRightW] = usePanelWidth('panelWidthRight', 300)
+  useAutoLimits()
 
   const startResize = (side: 'left' | 'right') => (e: React.MouseEvent) => {
     e.preventDefault() // no text selection while dragging

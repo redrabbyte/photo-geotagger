@@ -139,10 +139,17 @@ the file's modified time (flagged in the inspector).
   are generated lazily for visible filmstrip items only, debounced against
   re-sorting during a scan; a clicked photo jumps the queue.
 - ExifTool writes coalesce many files into one Perl execution (argfile +
-  `-execute`), run in an adaptively sized worker pool (2–4 by CPU/memory)
-  that pre-boots when ExifTool mode is selected. JPEGs always take the fast
-  pure-JS path. Safe-mode batches write with parallel workers and a
-  per-batch directory-handle cache (FSA round trips dominate their cost).
+  `-execute`), run in a worker pool that pre-boots when ExifTool mode is
+  selected. JPEGs always take the fast pure-JS path. Safe-mode batches write
+  with parallel workers and a per-batch directory-handle cache (FSA round
+  trips dominate their cost).
+- Write parallelism (files in flight, ExifTool workers) is fitted
+  automatically: modest defaults while an import is still loading — sizes
+  arrive per scanned file, so the memory estimate only grows — then the
+  widest setting whose estimated peak stays under the device's budget
+  (2 GB on phones, 8 GB otherwise), never exceeding the logical core count.
+  The ⚙ Limits dialog shows each value's estimated peak for the loaded files,
+  marks the automatic choice, and switches to manual as soon as one is picked.
 - Videos: capture date and GPS are parsed from the container with tiny
   sliced reads (Sony XML uuid box, `mvhd`, `©xyz`/`Keys`); the ExifTool
   inspector feeds on a metadata-only copy (all boxes except `mdat`), so file

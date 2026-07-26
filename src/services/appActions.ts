@@ -22,6 +22,7 @@ import {
   writeInteropBatch,
   writeTimeBatch,
 } from './writePipeline'
+import { defaultLimits, fitLimits, limitCeilings, ramBudgetBytes } from './ramEstimate'
 import {
   useStore,
   nextSourceId,
@@ -41,6 +42,52 @@ import {
 function writeConcurrency(settings: AppSettings): number {
   if (settings.writeMode !== 'exiftool') return 6
   return Math.max(1, settings.limits.writeConcurrency)
+}
+
+/**
+ * How far the import has got in measuring file sizes. Sizes arrive with each
+ * photo's metadata scan, so the memory estimate — and the limits derived from
+ * it — keep moving until every file has been seen.
+ */
+export function limitsLoadState(
+  photos: ReadonlyArray<Pick<Photo, 'scanState'>>,
+  scanning: boolean
+): { total: number; measured: number; settled: boolean } {
+  const pending = photos.filter((p) => p.scanState === 'pending').length
+  return { total: photos.length, measured: photos.length - pending, settled: !scanning && pending === 0 }
+}
+
+/**
+ * Widen (or narrow) the write limits to fit the files that are loaded — the
+ * automatic choice, applied only once the import has settled so the numbers
+ * stop moving under the user, and only while they have not picked values
+ * themselves. Cheap and idempotent: it returns early once the fit is in place.
+ */
+export function autoTuneLimits(): void {
+  const store = useStore.getState()
+  const { settings } = store
+  const photos = Object.values(store.photos)
+  if (!settings.limitsAuto || !limitsLoadState(photos, store.scanning).settled) return
+  const files = photos
+    .filter((p) => p.sizeBytes > 0)
+    .map((p) => ({ sizeBytes: p.sizeBytes, kind: p.kind }))
+  if (files.length === 0) return
+
+  const fitted = fitLimits({
+    files,
+    mode: settings.writeMode,
+    fastRaw: settings.fastRaw,
+    fastMp4: settings.fastMp4,
+    budgetBytes: ramBudgetBytes(),
+    ceilings: limitCeilings(),
+    workersWhenIdle: defaultLimits().exiftoolWorkers,
+  })
+  const { limits } = settings
+  if (fitted.writeConcurrency === limits.writeConcurrency && fitted.exiftoolWorkers === limits.exiftoolWorkers) return
+  store.setSettings({ limits: fitted })
+  // Follow the new width, but never boot the pool from here — that download
+  // belongs to switching into ExifTool mode, not to finishing an import.
+  if (settings.writeMode === 'exiftool') setExiftoolPoolSize(fitted.exiftoolWorkers)
 }
 
 /**
