@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Photo } from '../domain/types'
 import { displayPosition, effectiveUtcMs, gpsStatus, isDirty } from '../domain/types'
 import { positionAtTime } from '../domain/positionAtTime'
@@ -19,6 +19,7 @@ export function Filmstrip() {
   const sources = useStore((s) => s.sources)
   const selectedIds = useStore((s) => s.selectedIds)
   const activePhotoId = useStore((s) => s.activePhotoId)
+  const cursorMs = useStore((s) => s.timelineCursorMs)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const [viewWidth, setViewWidth] = useState(1200)
@@ -88,6 +89,14 @@ export function Filmstrip() {
     // the first photos arrive (the ref is null before that).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allCount === 0])
+  const timeOf = useCallback(
+    (p: Photo) => {
+      const src = sources[p.sourceId]
+      return (src && effectiveUtcMs(p, src)) ?? p.lastModified
+    },
+    [sources]
+  )
+
   const ordered: Photo[] = useMemo(() => {
     let list = Object.values(photos)
     if (filterMode === 'untagged') {
@@ -97,25 +106,41 @@ export function Filmstrip() {
     } else if (filterMode === 'untagged+stripped') {
       list = list.filter((p) => gpsStatus(p) === 'none')
     }
-    const timeOf = (p: Photo) => {
-      const src = sources[p.sourceId]
-      return (src && effectiveUtcMs(p, src)) ?? p.lastModified
-    }
     return list.sort((a, b) => timeOf(a) - timeOf(b) || a.id.localeCompare(b.id))
-  }, [photos, sources, filterMode])
+  }, [photos, filterMode, timeOf])
 
-  // Scroll the active photo into view (e.g. after a timeline click).
+  /**
+   * Scroll to the moment the user pointed at (timeline click, or a photo
+   * clicked elsewhere). The active photo is picked from ALL photos, so with a
+   * filter on it often has no slot in the strip — then scroll to the shown
+   * photo nearest that time instead of leaving the strip behind.
+   */
   useEffect(() => {
     const el = scrollRef.current
-    if (!el || !activePhotoId) return
-    const idx = ordered.findIndex((p) => p.id === activePhotoId)
+    if (!el || ordered.length === 0) return
+    let idx = activePhotoId ? ordered.findIndex((p) => p.id === activePhotoId) : -1
+    if (idx < 0) {
+      const activePhoto = activePhotoId ? photos[activePhotoId] : undefined
+      const target = activePhoto ? timeOf(activePhoto) : cursorMs
+      if (target === undefined) return
+      let best = Infinity
+      ordered.forEach((p, i) => {
+        const delta = Math.abs(timeOf(p) - target)
+        if (delta < best) {
+          best = delta
+          idx = i
+        }
+      })
+    }
     if (idx < 0) return
     const left = idx * ITEM_W
     if (left < el.scrollLeft + ITEM_W || left > el.scrollLeft + el.clientWidth - ITEM_W * 2) {
       el.scrollTo({ left: left - el.clientWidth / 2 + ITEM_W / 2, behavior: 'smooth' })
     }
+    // Re-runs on every cursor move too: clicking a second spot whose nearest
+    // photo is already active would otherwise not scroll at all.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePhotoId])
+  }, [activePhotoId, cursorMs])
 
   const first = Math.max(0, Math.floor(scrollLeft / ITEM_W) - 4)
   const count = Math.ceil(viewWidth / ITEM_W) + 8
