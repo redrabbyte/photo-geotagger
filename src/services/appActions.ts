@@ -13,7 +13,6 @@ import {
 import { ScanClient } from './scanClient'
 import { captureVideoFrame } from './videoThumb'
 import {
-  recommendedExiftoolPool,
   resetIdleExiftoolWorkers,
   setExiftoolPoolSize,
   timeCorrectionFor,
@@ -32,23 +31,14 @@ import {
 } from '../state/store'
 
 /**
- * Safe-mode writes are pure FSA I/O: the per-file cost is fixed browser
- * round-trip latency (handle lookups, safe-browsing check on close), so
- * parallelism hides it almost linearly. ExifTool mode keeps ~3 requests in
- * flight per worker so each worker's queue coalesces into one Perl run
- * (the workers batch internally), bounded to limit RAW buffers in memory.
- *
- * The experimental fast paths use no worker at all — they are I/O bound like
- * safe mode — so deriving their limit from the ExifTool pool would throttle
- * them for nothing (with "Parallel (RAW)" off that pool is 1, i.e. 3 jobs).
- * They still buffer a file per job, hence a lower ceiling on phones.
+ * Safe-mode writes are pure FSA I/O — fixed browser round-trip latency that
+ * parallelism hides almost linearly — so they always run at a comfortable
+ * width. ExifTool and the fast paths buffer whole files, so there the user's
+ * configured limit applies (the dialog shows what it costs in memory).
  */
 function writeConcurrency(settings: AppSettings): number {
   if (settings.writeMode !== 'exiftool') return 6
-  const pooled = recommendedExiftoolPool(settings.parallelExiftool) * 3
-  const fastPath = settings.fastRaw || settings.fastMp4
-  const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
-  return Math.min(8, Math.max(pooled, fastPath ? (mobile ? 4 : 6) : 0))
+  return Math.max(1, settings.limits.writeConcurrency)
 }
 
 /**
@@ -58,7 +48,7 @@ function writeConcurrency(settings: AppSettings): number {
 export function prepareExiftool(): void {
   const settings = useStore.getState().settings
   if (settings.writeMode !== 'exiftool') return
-  setExiftoolPoolSize(recommendedExiftoolPool(settings.parallelExiftool))
+  setExiftoolPoolSize(settings.limits.exiftoolWorkers)
   warmupExiftool()
 }
 
@@ -624,7 +614,7 @@ export async function writeTimesFlow(onlyIds?: string[]): Promise<void> {
   if (!(await ensureWritePermissions(targets))) return
 
   const timeConcurrency = writeConcurrency(store.settings)
-  setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
+  setExiftoolPoolSize(store.settings.limits.exiftoolWorkers)
   writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const results = await writeTimeBatch(
@@ -756,7 +746,7 @@ export async function writeDirtyFlow(onlyIds?: string[]): Promise<void> {
   }
 
   const gpsConcurrency = writeConcurrency(store.settings)
-  setExiftoolPoolSize(recommendedExiftoolPool(store.settings.parallelExiftool))
+  setExiftoolPoolSize(store.settings.limits.exiftoolWorkers)
   writeStopRequested = false
   store.markWriting(targets.map((p) => p.id))
   const sourcesMap = new Map(Object.entries(store.sources))

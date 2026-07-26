@@ -35,6 +35,7 @@ import {
   type TrackDraft,
 } from '../domain/trackDraft'
 import type { WriteMode } from '../services/writePipeline'
+import type { WriteLimits } from '../services/ramEstimate'
 import type { ImportFilters } from '../services/fs/sources'
 
 export const SOURCE_COLORS = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#76b7b2', '#edc948']
@@ -71,8 +72,8 @@ export interface AppSettings {
   backupOriginals: boolean
   /** Also write the clock-corrected capture time + timezone into files. */
   writeCorrectedTime: boolean
-  /** Use two ExifTool workers for RAW/HEIC writes (faster, more memory). */
-  parallelExiftool: boolean
+  /** How much work runs at once — memory for speed. See the limits dialog. */
+  limits: WriteLimits
   /** ExifTool mode: also write GPS from loaded .xmp sidecars into the raw files. */
   embedSidecarGps: boolean
   /** Experimental: write MP4/MOV metadata directly in JS (fallback: ExifTool). */
@@ -213,17 +214,41 @@ let noticeCounter = 1
 
 const SETTINGS_KEY = 'photo-geotagger.settings.v1'
 
+const isMobile = (): boolean =>
+  typeof navigator !== 'undefined' && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+
+/**
+ * Starting limits: enough parallelism to be quick, low enough to be safe on the
+ * device at hand. Phones get fewer of both — less RAM, and each ExifTool worker
+ * keeps a 25 MB interpreter resident. Users can raise them in the dialog, which
+ * shows what each value costs for the files they actually loaded.
+ */
+export function defaultLimits(): WriteLimits {
+  if (isMobile()) return { exiftoolWorkers: 2, writeConcurrency: 4 }
+  const cores = navigator?.hardwareConcurrency ?? 4
+  const memGb = (navigator as Navigator & { deviceMemory?: number })?.deviceMemory ?? 4
+  return {
+    exiftoolWorkers: Math.max(2, Math.min(4, Math.floor(cores / 2), Math.floor(memGb / 2))),
+    writeConcurrency: 6,
+  }
+}
+
+export const LIMIT_RANGES = {
+  exiftoolWorkers: { min: 1, max: 6 },
+  writeConcurrency: { min: 1, max: 12 },
+} as const
+
 const DEFAULT_SETTINGS: AppSettings = {
   writeMode: 'safe',
   backupOriginals: false,
   writeCorrectedTime: false,
-  parallelExiftool: false,
   embedSidecarGps: false,
   fastMp4: false,
   fastRaw: false,
   importFilters: { jpeg: true, raw: true, xmp: true, video: true },
   match: DEFAULT_MATCH_SETTINGS,
   matchSources: { tracks: true, photos: true },
+  limits: { exiftoolWorkers: 2, writeConcurrency: 6 },
 }
 
 /** Settings survive sessions; unknown/missing fields fall back to defaults. */
@@ -236,12 +261,23 @@ function initialSettings(): AppSettings {
   } catch {
     // corrupt/unavailable storage — use defaults
   }
+  // Sessions from before the limits dialog carry a "Parallel (RAW)" boolean;
+  // honour that choice instead of silently raising their memory use.
+  const legacy = (stored as { parallelExiftool?: boolean }).parallelExiftool
+  const limits =
+    stored.limits ??
+    (legacy === undefined
+      ? defaultLimits()
+      : legacy
+        ? defaultLimits()
+        : { exiftoolWorkers: 1, writeConcurrency: 3 })
   return {
     ...DEFAULT_SETTINGS,
     ...stored,
     importFilters: { ...DEFAULT_SETTINGS.importFilters, ...stored.importFilters },
     match: { ...DEFAULT_SETTINGS.match, ...stored.match },
     matchSources: { ...DEFAULT_SETTINGS.matchSources, ...stored.matchSources },
+    limits: { ...defaultLimits(), ...limits },
   }
 }
 

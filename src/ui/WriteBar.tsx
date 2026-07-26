@@ -5,6 +5,7 @@ import { prepareExiftool, requestWriteStop, writeDirtyFlow, writeTimesFlow } fro
 import { timeCorrectionFor, type WriteMode } from '../services/writePipeline'
 import { formatEtaMs } from './format'
 import { Modal } from './Modal'
+import { LimitsDialog } from './LimitsDialog'
 
 export function WriteBar() {
   const photos = useStore((s) => s.photos)
@@ -13,6 +14,7 @@ export function WriteBar() {
   const sources = useStore((s) => s.sources)
   const selectedIds = useStore((s) => s.selectedIds)
   const [confirmExiftool, setConfirmExiftool] = useState(false)
+  const [showLimits, setShowLimits] = useState(false)
   // Pending flow awaiting the stripped-files confirmation.
   const [confirmStripped, setConfirmStripped] = useState<'gps' | 'time' | null>(null)
 
@@ -117,23 +119,13 @@ export function WriteBar() {
         Write corrected time
       </label>
 
-      {settings.writeMode === 'exiftool' && (
-        <label
-          className="checkbox-row"
-          title="Run multiple ExifTool workers (2–4, scaled to this device's CPU and memory) so RAW/HEIC files are written in parallel — several times faster on large batches, at the cost of extra memory (each worker can peak at several hundred MB with big RAW files)."
-        >
-          <input
-            type="checkbox"
-            checked={settings.parallelExiftool}
-            onChange={(e) => {
-              useStore.getState().setSettings({ parallelExiftool: e.target.checked })
-              prepareExiftool()
-            }}
-            disabled={writing}
-          />
-          Parallel (RAW)
-        </label>
-      )}
+      <button
+        className="limits-button"
+        title="Write limits: how many files and ExifTool workers run at once, with the memory each setting costs for the files you loaded"
+        onClick={() => setShowLimits(true)}
+      >
+        ⚙ Limits
+      </button>
 
       {settings.writeMode === 'exiftool' && (
         <label
@@ -307,6 +299,8 @@ export function WriteBar() {
             </Modal>
           )
         })()}
+
+      {showLimits && <LimitsDialog onClose={() => setShowLimits(false)} />}
 
       {confirmExiftool && (
         <Modal onClose={() => setConfirmExiftool(false)}>

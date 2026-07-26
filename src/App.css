@@ -843,3 +843,51 @@ select {
   height: 4px;
   min-width: 60px;
 }
+
+.limits-button {
+  white-space: nowrap;
+}
+.limits-dialog .limit-row {
+  margin: 12px 0;
+}
+.limits-dialog .limit-row > label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.limits-dialog .limit-row > label > span {
+  font-weight: 400;
+}
+.limit-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.limit-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 58px;
+  padding: 4px 6px;
+  line-height: 1.2;
+}
+.limit-choice.selected {
+  outline: 2px solid var(--accent, #4e79a7);
+  font-weight: 600;
+}
+.limit-choice .limit-value {
+  font-size: 1.05em;
+}
+.limit-choice .limit-star {
+  font-size: 0.75em;
+  opacity: 0.75;
+  margin-left: 2px;
+}
+.limit-choice .limit-cost {
+  font-size: 0.75em;
+  opacity: 0.7;
+  white-space: nowrap;
+}
