@@ -168,6 +168,7 @@ export function ensureMeta(id: string): void {
 export function ensureThumbs(ids: string[], priority = false): void {
   const store = useStore.getState()
   const jobs = []
+  const requested: string[] = []
   for (const id of ids) {
     // Priority requests re-enqueue even if already queued normally — the
     // selected photo must not wait behind the regular queue.
@@ -179,12 +180,15 @@ export function ensureThumbs(ids: string[], priority = false): void {
       // Videos have no embedded preview and <video> exists only on the main
       // thread — they take a separate lazy, strictly serial capture queue.
       videoThumbQueue.push(p.id)
+      requested.push(p.id)
       void pumpVideoThumbs()
     } else {
       jobs.push({ id: p.id, handle: p.fileHandle, kind: p.kind, orientation: p.meta?.orientation })
+      requested.push(p.id)
     }
   }
   if (jobs.length > 0) getScanClient().enqueueThumbs(jobs, priority)
+  store.markThumbsRequested(requested)
 }
 
 const videoThumbQueue: string[] = []
@@ -199,7 +203,10 @@ async function pumpVideoThumbs(): Promise<void> {
       const id = videoThumbQueue.shift()
       if (!id) return
       const p = useStore.getState().photos[id]
-      if (!p || p.thumbUrl || !p.fileHandle) continue
+      if (!p || p.thumbUrl || !p.fileHandle) {
+        queueUpdate({ id, kind: 'thumb-failed' }) // settle the in-flight entry
+        continue
+      }
       try {
         const blob = await captureVideoFrame(await p.fileHandle.getFile())
         // Re-check: a racing duplicate request may have delivered meanwhile.
@@ -207,9 +214,12 @@ async function pumpVideoThumbs(): Promise<void> {
           // User-facing like worker thumbs: show immediately, no batch delay.
           queueUpdate({ id, kind: 'thumb', url: URL.createObjectURL(blob) })
           flushNow()
+        } else {
+          queueUpdate({ id, kind: 'thumb-failed' })
         }
       } catch {
         // undecodable (e.g. HEVC without hardware) — keep the placeholder
+        queueUpdate({ id, kind: 'thumb-failed' })
       }
     }
   } finally {

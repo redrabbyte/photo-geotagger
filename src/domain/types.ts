@@ -107,6 +107,8 @@ export interface Photo {
   scanState: ScanState
   scanError?: string
   thumbUrl?: string
+  /** No embedded preview could be produced — stop showing it as pending. */
+  thumbFailed?: boolean
 
   assignment?: PositionAssignment
   writeState: WriteState

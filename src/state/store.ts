@@ -94,6 +94,8 @@ export interface AppState {
   activePhotoId?: string
   settings: AppSettings
   scanning: boolean
+  /** Thumbnail jobs handed to the workers that have not settled yet. */
+  thumbsPending: ReadonlySet<string>
   writeProgress?: { done: number; total: number; current: string; etaMs?: number }
   notices: Notice[]
   /** Manual drags snap to the nearest track when enabled. */
@@ -122,6 +124,8 @@ export interface AppState {
   removeSource(id: SourceId): void
   updateSource(id: SourceId, patch: Partial<Pick<Source, 'name' | 'clockOffsetMs' | 'assumedTzOffsetMin' | 'color'>>): void
   applyScanUpdates(updates: ScanUpdate[]): void
+  /** Note thumbnail jobs as in flight (cleared when they deliver or fail). */
+  markThumbsRequested(ids: string[]): void
   setScanning(scanning: boolean): void
   addTracks(tracks: Track[]): void
   removeTrack(id: string): void
@@ -246,6 +250,7 @@ export const useStore = create<AppState>((set, get) => ({
   photos: {},
   tracks: {},
   selectedIds: new Set<string>(),
+  thumbsPending: new Set<string>(),
   settings: initialSettings(),
   scanning: false,
   notices: [],
@@ -287,9 +292,27 @@ export const useStore = create<AppState>((set, get) => ({
     })
   },
 
+  markThumbsRequested(ids) {
+    if (ids.length === 0) return
+    set((s) => {
+      const pending = new Set(s.thumbsPending)
+      for (const id of ids) pending.add(id)
+      return { thumbsPending: pending }
+    })
+  },
+
   applyScanUpdates(updates) {
     set((s) => {
       const photos = { ...s.photos }
+      // Thumbnail jobs settle here (delivered or failed) — drop them from the
+      // in-flight set that drives the per-folder progress display.
+      let thumbsPending: Set<string> | undefined
+      for (const u of updates) {
+        if (u.kind !== 'thumb' && u.kind !== 'thumb-failed') continue
+        if (!s.thumbsPending.has(u.id)) continue
+        thumbsPending ??= new Set(s.thumbsPending)
+        thumbsPending.delete(u.id)
+      }
       for (const u of updates) {
         const p = photos[u.id]
         if (!p) continue
@@ -319,14 +342,14 @@ export const useStore = create<AppState>((set, get) => ({
             photos[u.id] = { ...p, thumbUrl: u.url }
             break
           case 'thumb-failed':
-            photos[u.id] = { ...p }
+            photos[u.id] = { ...p, thumbFailed: true }
             break
           case 'error':
             photos[u.id] = { ...p, scanState: 'error', scanError: u.message }
             break
         }
       }
-      return { photos }
+      return thumbsPending ? { photos, thumbsPending } : { photos }
     })
   },
 

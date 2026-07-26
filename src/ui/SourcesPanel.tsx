@@ -61,17 +61,32 @@ export function SourcesPanel() {
     listRestorableGpx().then(setRestorableGpx).catch(() => setRestorableGpx([]))
   }, [])
 
+  const thumbsPending = useStore((st) => st.thumbsPending)
+
   const counts = useMemo(() => {
-    const bySource: Record<string, { total: number; withGps: number; stale: number }> = {}
+    const bySource: Record<
+      string,
+      { total: number; withGps: number; stale: number; scanned: number; thumbs: number; previews: number }
+    > = {}
     for (const p of Object.values(photos)) {
-      const c = (bySource[p.sourceId] ??= { total: 0, withGps: 0, stale: 0 })
+      const c = (bySource[p.sourceId] ??= {
+        total: 0,
+        withGps: 0,
+        stale: 0,
+        scanned: 0,
+        thumbs: 0,
+        previews: 0,
+      })
       c.total++
       if (p.meta?.originalGps || p.assignment) c.withGps++
+      if (p.scanState !== 'pending') c.scanned++
+      if (p.thumbUrl || p.thumbFailed) c.thumbs++
+      if (thumbsPending.has(p.id)) c.previews++
       const src = sources[p.sourceId]
       if (src && isStale(p, src)) c.stale++
     }
     return bySource
-  }, [photos, sources])
+  }, [photos, sources, thumbsPending])
 
   const sourceList = Object.values(sources)
   const trackList = Object.values(tracks)
@@ -138,7 +153,7 @@ export function SourcesPanel() {
       {sourceList.length === 0 && <p className="muted">Each folder becomes a source (e.g. “Phone”, “Sony A7”) with its own color and clock correction.</p>}
 
       {sourceList.map((s) => {
-        const c = counts[s.id] ?? { total: 0, withGps: 0, stale: 0 }
+        const c = counts[s.id] ?? { total: 0, withGps: 0, stale: 0, scanned: 0, thumbs: 0, previews: 0 }
         return (
           <div className="source-item" key={s.id}>
             <div className="source-row">
@@ -166,6 +181,7 @@ export function SourcesPanel() {
               </button>
               <button className="remove" title="Remove source (files are untouched)" onClick={() => useStore.getState().removeSource(s.id)}>×</button>
             </div>
+            <SourceProgress scanned={c.scanned} total={c.total} previews={c.previews} />
             <div className="source-row">
               <span className="muted small">Clock</span>
               <OffsetEditor sourceId={s.id} value={s.clockOffsetMs} />
@@ -336,5 +352,33 @@ function NewTrackDialog({ onClose }: { onClose: () => void }) {
         <button className="primary" onClick={create}>Create & place on map</button>
       </div>
     </Modal>
+  )
+}
+
+/**
+ * Per-folder loading state: metadata is a known total (every file is queued at
+ * import), so it gets a real bar. Previews are only requested for what is
+ * nearly visible, so they are reported as a live count instead of a ratio.
+ */
+function SourceProgress({ scanned, total, previews }: { scanned: number; total: number; previews: number }) {
+  const metaDone = total === 0 || scanned >= total
+  if (metaDone && previews === 0) return null
+  return (
+    <div className="source-row source-progress">
+      {!metaDone && (
+        <>
+          <progress value={scanned} max={total} />
+          <span className="muted small">
+            reading metadata {scanned}/{total}
+          </span>
+        </>
+      )}
+      {previews > 0 && (
+        <span className="muted small" title="Embedded previews being extracted for the visible photos">
+          {metaDone ? '' : ' · '}
+          {previews} preview{previews === 1 ? '' : 's'}…
+        </span>
+      )}
+    </div>
   )
 }

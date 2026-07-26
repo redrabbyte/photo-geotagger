@@ -191,6 +191,27 @@ describe('toggleSelected', () => {
   })
 })
 
+describe('thumbnail progress tracking', () => {
+  it('clears in-flight thumbs when they deliver or fail, and only those', () => {
+    seed([makePhoto('a', T0), makePhoto('b', T0), makePhoto('c', T0)])
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    useStore.getState().markThumbsRequested(['a', 'b', 'c'])
+    expect(useStore.getState().thumbsPending.size).toBe(3)
+
+    useStore.getState().applyScanUpdates([
+      { id: 'a', kind: 'thumb', url: 'blob:a' },
+      { id: 'b', kind: 'thumb-failed' },
+    ])
+    const after = useStore.getState()
+    expect([...after.thumbsPending]).toEqual(['c'])
+    // A failed preview is remembered so it stops counting as pending.
+    expect(after.photos.b.thumbFailed).toBe(true)
+    // Unrelated updates leave the set alone.
+    useStore.getState().applyScanUpdates([{ id: 'c', kind: 'meta', meta: { captureLocalMs: T0 } }])
+    expect([...useStore.getState().thumbsPending]).toEqual(['c'])
+  })
+})
+
 describe('thumb updates', () => {
   it('revokes the previous blob URL when a duplicate thumb lands', () => {
     seed([makePhoto('p', T0, { thumbUrl: 'blob:old' })])

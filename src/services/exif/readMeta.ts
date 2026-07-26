@@ -2,6 +2,7 @@ import exifr from 'exifr'
 import type { PhotoMeta } from '../../domain/types'
 import { normalizeOrientation } from './orient'
 import { parseTzOffsetMin, readVideoMetadata } from './videoMeta'
+import { readTiffGps } from './tiffReader'
 
 // No `pick` filtering: it silently drops tags needed for derived values
 // (e.g. GPS*Ref, without which exifr loses the coordinate's hemisphere).
@@ -87,6 +88,19 @@ export async function extractMeta(
     meta.originalGps = { lat, lon, ele }
   } else if (exif && Object.keys(exif).some((k) => k.startsWith('GPS'))) {
     meta.gpsEmpty = true
+  }
+
+  // A RAW's GPS IFD can sit megabytes into the file — past what exifr's chunked
+  // reader reaches, so the parse above comes back without coordinates the file
+  // does carry (tools that append metadata, including older versions of this
+  // app, produce exactly that). Follow the pointers with a couple of small
+  // ranged reads; non-TIFF input and files without a GPS IFD bail immediately.
+  if (!meta.originalGps && kind !== 'jpeg' && input instanceof Blob) {
+    const far = await readTiffGps(input)
+    if (far) {
+      meta.originalGps = far
+      delete meta.gpsEmpty
+    }
   }
   meta.orientation = normalizeOrientation(exif?.Orientation)
   if (typeof exif?.Model === 'string') meta.cameraModel = exif.Model

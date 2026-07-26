@@ -833,3 +833,13 @@ select {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.source-progress {
+  gap: 6px;
+  align-items: center;
+}
+.source-progress progress {
+  flex: 1;
+  height: 4px;
+  min-width: 60px;
+}
