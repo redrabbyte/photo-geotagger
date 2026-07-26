@@ -14,6 +14,7 @@ import { isFatalWasmError } from './exif/exiftoolRunner'
 import { backupOriginal, readFileBytes, writeFileBytes, writeFileParts } from './fs/safeWrite'
 import { Mp4StructureError, rewriteMp4Metadata } from './exif/mp4Writer'
 import { TiffStructureError, rewriteTiffMetadata } from './exif/tiffWriter'
+import { EXIFR_OPTIONS } from './exif/readMeta'
 import { directoryOf } from './fs/sources'
 import type { ExiftoolRequest, ExiftoolResponse } from '../workers/exiftool.worker'
 
@@ -423,10 +424,12 @@ async function tryWriteRawFast(
     if (err instanceof TiffStructureError) return false
     throw err
   }
-  // Verify with an independent parser before anything touches the original.
+  // Verify the way the app's import actually reads a RAW: chunked, from a
+  // File. A full-buffer parse would happily find metadata that a chunked
+  // reader never reaches, and the file would come back without coordinates.
   let parsed: Record<string, unknown> | undefined
   try {
-    parsed = await exifr.parse(rewritten.buffer as ArrayBuffer, { tiff: true, exif: true, gps: true })
+    parsed = await exifr.parse(new File([rewritten as BlobPart], photo.fileName), EXIFR_OPTIONS)
   } catch {
     parsed = undefined
   }

@@ -63,6 +63,57 @@ describe('rewriteTiffMetadata', () => {
     expect(text).toContain('2026:07:04 15:00:00')
   })
 
+  /**
+   * The regression that shipped GPS-less RAWs: chunked readers (exifr, used by
+   * the app's own import) fetch a window around the offset they seek to, so
+   * anything the new IFD0 references must lie AFTER it. A full-buffer parse
+   * cannot catch a violation — this checks the layout itself.
+   */
+  it('keeps every new offset in one forward window starting at the relocated IFD0', () => {
+    const u16 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint16(o, true)
+    const u32 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset).getUint32(o, true)
+
+    for (const edit of [
+      { gps },
+      { time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0), tzOffsetMin: 120 } },
+      { gps, time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0), tzOffsetMin: 120 } },
+    ]) {
+      const original = makeTiff()
+      const out = rewriteTiffMetadata(asBuffer(original), edit)
+      const ifd0Offset = u32(out, 4)
+      // IFD0 was relocated into the appended block.
+      expect(ifd0Offset).toBeGreaterThanOrEqual(original.length)
+
+      const count = u16(out, ifd0Offset)
+      const pointers: number[] = []
+      for (let i = 0; i < count; i++) {
+        const rec = ifd0Offset + 2 + i * 12
+        const tag = u16(out, rec)
+        // GPSInfo / ExifIFD pointers, and every GPS value offset behind them.
+        if (tag === 0x8825 || tag === 0x8769) {
+          const target = u32(out, rec + 8)
+          if (target >= original.length) {
+            pointers.push(target)
+            const subCount = u16(out, target)
+            for (let j = 0; j < subCount; j++) {
+              const subRec = target + 2 + j * 12
+              const subCountVal = u32(out, subRec + 4)
+              const type = u16(out, subRec + 2)
+              const size = subCountVal * (type === 5 ? 8 : type === 4 ? 4 : 1)
+              if (size > 4) pointers.push(u32(out, subRec + 8))
+            }
+          }
+        }
+      }
+      expect(pointers.length).toBeGreaterThan(0)
+      // Either in the original front region (covered by the reader's first
+      // chunk) or in the forward window — never stranded in between, which is
+      // what a GPS IFD appended before the new IFD0 used to be.
+      const stranded = pointers.filter((p) => p >= original.length && p < ifd0Offset)
+      expect(stranded).toEqual([])
+    }
+  })
+
   it('bails with TiffStructureError on anything not understood', () => {
     const gpsOnly = { gps }
     // Not a TIFF (e.g. RAF/CR3/HEIC magic).

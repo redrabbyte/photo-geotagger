@@ -232,14 +232,15 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
   const ifd0 = tiff.readIfd(tiff.u32(4))
 
   const apply = (patch: Patch) => work.set(patch.bytes, patch.offset)
-  const tail: Uint8Array[] = []
-  // TIFF values must sit at even offsets — pad the appended region if needed.
-  let base = original.byteLength + (original.byteLength % 2)
 
+  // ---- phase 1: same-size values patched where they already are ----
+  let exifIfd: Ifd | undefined
+  let exifPtr: Entry | undefined
+  const addOffsetTags: number[] = []
   if (edit.time) {
-    const exifPtr = ifd0.entries.find((e) => e.tag === TAG_EXIF_IFD)
+    exifPtr = ifd0.entries.find((e) => e.tag === TAG_EXIF_IFD)
     if (!exifPtr) throw new TiffStructureError('No Exif IFD — cannot correct capture time')
-    const exifIfd = tiff.readIfd(exifPtr.slot)
+    exifIfd = tiff.readIfd(exifPtr.slot)
     const dto = exifIfd.entries.find((e) => e.tag === TAG_DATETIME_ORIGINAL)
     if (!dto) throw new TiffStructureError('No DateTimeOriginal to correct')
     const dateTime = formatExifDateTime(edit.time.wallClockMs)
@@ -248,68 +249,74 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
     if (digitized) apply(asciiPatch(tiff, digitized, dateTime))
 
     const tz = formatTzOffset(edit.time.tzOffsetMin)
-    const missing = new Map<number, Uint8Array>()
     for (const tag of [TAG_OFFSET_TIME_ORIGINAL, TAG_OFFSET_TIME_DIGITIZED]) {
       const existing = exifIfd.entries.find((e) => e.tag === tag)
-      if (existing) {
-        apply(asciiPatch(tiff, existing, tz))
-      } else {
-        // Value appended to the tail; entry added to the rebuilt Exif IFD.
-        missing.set(tag, b.entry(tag, T_ASCII, tz.length + 1, b.u32(0)))
-      }
-    }
-    if (missing.size > 0) {
-      // Append an extended copy of the Exif IFD and repoint IFD0's entry at it.
-      const valueBase = base
-      let valueOffset = valueBase
-      const values: Uint8Array[] = []
-      for (const [tag, record] of missing) {
-        const value = ascii(`${tz}\0`)
-        const patched = record.slice()
-        patched.set(b.u32(valueOffset), 8)
-        missing.set(tag, patched)
-        values.push(value)
-        valueOffset += value.length
-      }
-      if (valueOffset % 2 === 1) {
-        values.push(new Uint8Array(1))
-        valueOffset += 1
-      }
-      const newExifIfdOffset = valueOffset
-      const table = rebuildIfdTable(tiff, b, exifIfd, missing)
-      tail.push(...values, table)
-      base = newExifIfdOffset + table.length
-      apply({ offset: exifPtr.recordOffset + 8, bytes: b.u32(newExifIfdOffset) })
+      if (existing) apply(asciiPatch(tiff, existing, tz))
+      else addOffsetTags.push(tag)
     }
   }
+  const needsExifCopy = addOffsetTags.length > 0
+  if (!edit.gps && !needsExifCopy) return work // pure in-place patch
 
-  if (edit.gps) {
-    const gpsIfdOffset = base
-    const gpsIfd = buildGpsIfd(b, edit.gps, gpsIfdOffset)
-    tail.push(gpsIfd)
-    base += gpsIfd.length
-
-    const existing = ifd0.entries.find((e) => e.tag === TAG_GPS_IFD)
-    if (existing) {
-      // Rewrite the whole 12-byte record: some writers use type IFD/SHORT.
-      apply({
-        offset: existing.recordOffset,
-        bytes: b.entry(TAG_GPS_IFD, T_LONG, 1, b.u32(gpsIfdOffset)),
-      })
-    } else {
-      const newIfd0Offset = base
-      const table = rebuildIfdTable(tiff, b, ifd0, new Map([[TAG_GPS_IFD, b.entry(TAG_GPS_IFD, T_LONG, 1, b.u32(gpsIfdOffset))]]))
-      tail.push(table)
-      base = newIfd0Offset + table.length
-      apply({ offset: 4, bytes: b.u32(newIfd0Offset) })
-    }
+  /*
+   * ---- phase 2: one contiguous appended block, IFD0 first ----
+   *
+   * Chunked readers (exifr, which the app's own import uses) fetch a window
+   * around the offset they seek to. A GPS IFD appended *before* the new IFD0,
+   * or left far from it, is outside that window: the file then parses without
+   * coordinates even though it is valid TIFF. So everything new goes into one
+   * block that STARTS with the IFD0 the header points at, and every value sits
+   * after the table referencing it — one forward window covers all of it.
+   */
+  const padding = original.byteLength % 2
+  let cursor = original.byteLength + padding
+  const reserve = (size: number): number => {
+    const offset = cursor
+    cursor += size
+    return offset
   }
+  const tableSize = (entries: number) => 2 + entries * 12 + 4
 
-  const padding = tail.length > 0 ? original.byteLength % 2 : 0
-  const out = new Uint8Array(original.byteLength + padding + tail.reduce((n, p) => n + p.length, 0))
+  const hasGpsEntry = ifd0.entries.some((e) => e.tag === TAG_GPS_IFD)
+  const ifd0Offset = reserve(tableSize(ifd0.entries.length + (edit.gps && !hasGpsEntry ? 1 : 0)))
+  const exifIfdOffset = needsExifCopy
+    ? reserve(tableSize(exifIfd!.entries.length + addOffsetTags.length))
+    : undefined
+  const tz = edit.time ? ascii(`${formatTzOffset(edit.time.tzOffsetMin)}\0`) : new Uint8Array(0)
+  const tzOffsets = addOffsetTags.map(() => reserve(tz.length))
+  if (cursor % 2 === 1) reserve(1) // rationals read better on even offsets
+  const gpsIfdOffset = edit.gps ? cursor : undefined
+
+  const ifd0Upserts = new Map<number, Uint8Array>()
+  if (gpsIfdOffset !== undefined) {
+    // Rewrite the whole record: some writers type this tag as IFD/SHORT.
+    ifd0Upserts.set(TAG_GPS_IFD, b.entry(TAG_GPS_IFD, T_LONG, 1, b.u32(gpsIfdOffset)))
+  }
+  if (exifIfdOffset !== undefined) {
+    ifd0Upserts.set(TAG_EXIF_IFD, b.entry(TAG_EXIF_IFD, T_LONG, 1, b.u32(exifIfdOffset)))
+  }
+  const block: Uint8Array[] = [rebuildIfdTable(tiff, b, ifd0, ifd0Upserts)]
+  if (exifIfdOffset !== undefined) {
+    const upserts = new Map<number, Uint8Array>()
+    addOffsetTags.forEach((tag, i) => {
+      upserts.set(tag, b.entry(tag, T_ASCII, tz.length, b.u32(tzOffsets[i])))
+    })
+    block.push(rebuildIfdTable(tiff, b, exifIfd!, upserts))
+    for (const _ of addOffsetTags) block.push(tz.slice())
+  }
+  if (gpsIfdOffset !== undefined) {
+    // Pad to the reserved (even) GPS offset before the IFD itself.
+    const written = original.byteLength + padding + block.reduce((n, p) => n + p.length, 0)
+    if (gpsIfdOffset > written) block.push(new Uint8Array(gpsIfdOffset - written))
+    block.push(buildGpsIfd(b, edit.gps!, gpsIfdOffset))
+  }
+  // The header points at the relocated IFD0 — the start of the block.
+  apply({ offset: 4, bytes: b.u32(ifd0Offset) })
+
+  const out = new Uint8Array(original.byteLength + padding + block.reduce((n, p) => n + p.length, 0))
   out.set(work, 0)
   let o = original.byteLength + padding
-  for (const part of tail) {
+  for (const part of block) {
     out.set(part, o)
     o += part.length
   }

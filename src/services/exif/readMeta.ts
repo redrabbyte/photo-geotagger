@@ -5,7 +5,7 @@ import { parseTzOffsetMin, readVideoMetadata } from './videoMeta'
 
 // No `pick` filtering: it silently drops tags needed for derived values
 // (e.g. GPS*Ref, without which exifr loses the coordinate's hemisphere).
-const EXIFR_OPTIONS: NonNullable<Parameters<typeof exifr.parse>[1]> = {
+export const EXIFR_OPTIONS: NonNullable<Parameters<typeof exifr.parse>[1]> = {
   tiff: true,
   exif: true,
   gps: true,
