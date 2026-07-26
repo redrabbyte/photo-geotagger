@@ -117,9 +117,19 @@ export function logicalCores(): number {
   return Math.max(1, Math.floor(typeof n === 'number' && n > 0 ? n : 4))
 }
 
+/** Approximate device RAM in GiB, when the browser reports it. */
+export function deviceMemoryGb(): number | undefined {
+  const value = (navigator as Navigator & { deviceMemory?: number })?.deviceMemory
+  return typeof value === 'number' && value > 0 ? value : undefined
+}
+
+/**
+ * Hard bounds, wide enough not to be the binding constraint on real hardware —
+ * the core count and the memory policy below do the actual limiting.
+ */
 export const LIMIT_RANGES = {
-  exiftoolWorkers: { min: 1, max: 6 },
-  writeConcurrency: { min: 1, max: 12 },
+  exiftoolWorkers: { min: 1, max: 12 },
+  writeConcurrency: { min: 1, max: 24 },
 } as const
 
 const clampTo = (v: number, range: { min: number; max: number }): number =>
@@ -138,9 +148,26 @@ export function limitCeilings(cores = logicalCores()): WriteLimits {
   }
 }
 
-/** Memory the automatic choice may plan for: phones get far less headroom. */
-export function ramBudgetBytes(mobile = isMobileDevice()): number {
-  return (mobile ? 2 : 8) * 1024 * 1024 * 1024
+export interface RamPolicy {
+  /** What the automatic choice aims for — comfortable, not the limit. */
+  targetBytes: number
+  /** Ceiling: settings whose estimate exceeds this are not offered at all. */
+  maxBytes: number
+}
+
+/**
+ * How much memory a write may plan for. The automatic choice aims low (1 GB on
+ * phones, 2 GB elsewhere) because the browser is not alone on the machine; the
+ * dialog still offers up to 2 GB / 8 GB for anyone who wants to trade memory
+ * for speed. Both come down to whatever the device reports having, when it
+ * reports anything — Chrome caps that figure at 8 GB, so a large desktop simply
+ * keeps the defaults.
+ */
+export function ramPolicy(mobile = isMobileDevice(), memGb = deviceMemoryGb()): RamPolicy {
+  const GB = 1024 * 1024 * 1024
+  const available = (gb: number) => (memGb === undefined ? gb : Math.min(gb, memGb)) * GB
+  const maxBytes = available(mobile ? 2 : 8)
+  return { targetBytes: Math.min(available(mobile ? 1 : 2), maxBytes), maxBytes }
 }
 
 /**
@@ -154,15 +181,41 @@ export function defaultLimits(): WriteLimits {
     writeConcurrency: Math.min(l.writeConcurrency, ceilings.writeConcurrency),
   })
   if (isMobileDevice()) return cap({ exiftoolWorkers: 2, writeConcurrency: 4 })
-  const memGb = (navigator as Navigator & { deviceMemory?: number })?.deviceMemory ?? 4
+  const memGb = deviceMemoryGb() ?? 4
   return cap({
     exiftoolWorkers: Math.max(2, Math.min(4, Math.floor(logicalCores() / 2), Math.floor(memGb / 2))),
     writeConcurrency: 6,
   })
 }
 
+/**
+ * Highest value worth offering for one knob: the core ceiling, cut short where
+ * the estimate would cross the memory ceiling. Monotonic — every extra file in
+ * flight and every extra interpreter only adds bytes — so the first value over
+ * the line ends the list. `current` is always offered, so a value carried over
+ * from another device or another write mode still shows as selected.
+ */
+export function offeredLimit(
+  knob: keyof WriteLimits,
+  input: Omit<RamEstimateInput, 'limits'> & {
+    limits: WriteLimits
+    maxBytes: number
+    ceilings: WriteLimits
+  }
+): number {
+  const { min } = LIMIT_RANGES[knob]
+  const ceiling = Math.max(min, input.ceilings[knob])
+  let offered = min
+  for (let v = min; v <= ceiling; v++) {
+    const limits = { ...input.limits, [knob]: v }
+    if (input.files.length > 0 && estimatePeakRam({ ...input, limits }).totalBytes > input.maxBytes) break
+    offered = v
+  }
+  return Math.max(offered, Math.min(input.limits[knob], LIMIT_RANGES[knob].max))
+}
+
 export interface FitLimitsInput extends Omit<RamEstimateInput, 'limits'> {
-  /** Estimated peak the result must stay under. */
+  /** Estimated peak the result should stay under (the target, not the ceiling). */
   budgetBytes: number
   /** Per-knob ceiling for this device. */
   ceilings: WriteLimits

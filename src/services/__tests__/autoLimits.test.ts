@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import type { Photo, PhotoKind } from '../../domain/types'
 import { useStore } from '../../state/store'
 import { autoTuneLimits, limitsLoadState } from '../appActions'
-import { defaultLimits, fitLimits, limitCeilings, ramBudgetBytes } from '../ramEstimate'
+import { defaultLimits, fitLimits, limitCeilings, ramPolicy } from '../ramEstimate'
 
 const MB = 1024 * 1024
 
@@ -38,7 +38,7 @@ const expectedFit = (files: Array<{ sizeBytes: number; kind: PhotoKind }>) =>
     mode: useStore.getState().settings.writeMode,
     fastRaw: false,
     fastMp4: false,
-    budgetBytes: ramBudgetBytes(),
+    budgetBytes: ramPolicy().targetBytes,
     ceilings: limitCeilings(),
     workersWhenIdle: defaultLimits().exiftoolWorkers,
   })

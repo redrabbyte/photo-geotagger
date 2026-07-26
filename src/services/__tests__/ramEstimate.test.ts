@@ -5,7 +5,8 @@ import {
   fitLimits,
   formatBytes,
   limitCeilings,
-  ramBudgetBytes,
+  offeredLimit,
+  ramPolicy,
   type RamEstimateInput,
 } from '../ramEstimate'
 
@@ -138,36 +139,97 @@ describe('limitCeilings', () => {
   })
 })
 
-describe('ramBudgetBytes', () => {
-  it('plans for 2 GB on phones and 8 GB elsewhere', () => {
-    expect(ramBudgetBytes(true)).toBe(2 * 1024 * MB)
-    expect(ramBudgetBytes(false)).toBe(8 * 1024 * MB)
+describe('ramPolicy', () => {
+  const GB = 1024 * MB
+
+  it('aims low by default but allows more on request', () => {
+    // The automatic choice is deliberately far below what is offered: the
+    // browser is not the only thing running on the machine.
+    expect(ramPolicy(false, undefined)).toEqual({ targetBytes: 2 * GB, maxBytes: 8 * GB })
+    expect(ramPolicy(true, undefined)).toEqual({ targetBytes: 1 * GB, maxBytes: 2 * GB })
+  })
+
+  it('comes down to what the device reports having', () => {
+    // A 4 GB machine must not be offered an 8 GB peak...
+    expect(ramPolicy(false, 4)).toEqual({ targetBytes: 2 * GB, maxBytes: 4 * GB })
+    // ...and on 1 GB even the target gives way.
+    expect(ramPolicy(false, 1)).toEqual({ targetBytes: 1 * GB, maxBytes: 1 * GB })
+    expect(ramPolicy(true, 0.5)).toEqual({ targetBytes: 0.5 * GB, maxBytes: 0.5 * GB })
+    // Chrome caps the figure at 8, so a big desktop keeps the defaults.
+    expect(ramPolicy(false, 8)).toEqual({ targetBytes: 2 * GB, maxBytes: 8 * GB })
+  })
+})
+
+describe('offeredLimit', () => {
+  const base16 = {
+    ...base,
+    limits: { exiftoolWorkers: 4, writeConcurrency: 6 },
+    ceilings: limitCeilings(16),
+    maxBytes: ramPolicy(false, undefined).maxBytes,
+  }
+
+  it('offers every value the cores allow when memory is not the constraint', () => {
+    // 16 cores: the point of the fix — the list used to stop at 12.
+    expect(offeredLimit('writeConcurrency', { ...base16, files: raws(50) })).toBe(16)
+    expect(offeredLimit('exiftoolWorkers', { ...base16, files: raws(50) })).toBe(12)
+  })
+
+  it('stops where the estimate would cross the memory ceiling', () => {
+    // 600 MB RAWs at 3x: 4 in flight is 7.2 GB, a fifth would pass 8 GB.
+    const files = raws(30, 600)
+    const offered = offeredLimit('writeConcurrency', {
+      ...base16,
+      limits: { exiftoolWorkers: 4, writeConcurrency: 1 },
+      files,
+    })
+    expect(offered).toBe(4)
+    expect(
+      estimatePeakRam({ ...base, files, limits: { exiftoolWorkers: 4, writeConcurrency: 4 } }).totalBytes
+    ).toBeLessThanOrEqual(base16.maxBytes)
+  })
+
+  it('still offers the value that is currently set', () => {
+    // Carried over from a roomier device: it must render as selected.
+    const offered = offeredLimit('writeConcurrency', {
+      ...base16,
+      limits: { exiftoolWorkers: 4, writeConcurrency: 9 },
+      files: raws(30, 600),
+    })
+    expect(offered).toBe(9)
+  })
+
+  it('offers the full core range before any file is loaded', () => {
+    expect(offeredLimit('writeConcurrency', { ...base16, files: [] })).toBe(16)
   })
 })
 
 describe('fitLimits', () => {
-  const desktop = { ceilings: limitCeilings(8), budgetBytes: ramBudgetBytes(false), workersWhenIdle: 2 }
+  const desktop = {
+    ceilings: limitCeilings(8),
+    budgetBytes: ramPolicy(false, undefined).targetBytes,
+    workersWhenIdle: 2,
+  }
 
   it('uses the whole device once ordinary files leave room for it', () => {
-    // 20 MB ARWs through ExifTool: 8 x 60 MB plus 6 interpreters is well under 8 GB.
+    // 20 MB ARWs through ExifTool: 8 x 60 MB plus 7 interpreters fits 2 GB.
     const fitted = fitLimits({ ...base, ...desktop, files: raws(200) })
-    expect(fitted).toEqual({ writeConcurrency: 8, exiftoolWorkers: 6 })
+    expect(fitted).toEqual({ writeConcurrency: 8, exiftoolWorkers: 7 })
     expect(estimatePeakRam({ ...base, files: raws(200), limits: fitted }).totalBytes).toBeLessThanOrEqual(
       desktop.budgetBytes
     )
   })
 
   it('narrows for files too big to run that wide', () => {
-    const files = raws(40, 700)
+    const files = raws(40, 120)
     const fitted = fitLimits({ ...base, ...desktop, files })
-    // 4 x 2.1 GB would blow the budget; 3 fits with room for the interpreters.
-    expect(fitted).toEqual({ writeConcurrency: 3, exiftoolWorkers: 3 })
+    // 6 x 360 MB plus the interpreters passes 2 GB; 5 stays under it.
+    expect(fitted).toEqual({ writeConcurrency: 5, exiftoolWorkers: 5 })
     const peak = estimatePeakRam({ ...base, files, limits: fitted }).totalBytes
     expect(peak).toBeLessThanOrEqual(desktop.budgetBytes)
     const wider = estimatePeakRam({
       ...base,
       files,
-      limits: { writeConcurrency: 4, exiftoolWorkers: 4 },
+      limits: { writeConcurrency: 6, exiftoolWorkers: 6 },
     }).totalBytes
     expect(wider).toBeGreaterThan(desktop.budgetBytes)
   })
@@ -183,7 +245,7 @@ describe('fitLimits', () => {
       ...base,
       files,
       ceilings: limitCeilings(8),
-      budgetBytes: ramBudgetBytes(true),
+      budgetBytes: ramPolicy(true, undefined).targetBytes,
       workersWhenIdle: 2,
     })
     const pc = fitLimits({ ...base, ...desktop, files })
@@ -220,7 +282,7 @@ describe('formatBytes', () => {
   it('uses the same units as the file sizes it describes', () => {
     // A 20 MiB ARW must not read as "21 MB", and a 8 GiB budget not as "8.6 GB".
     expect(formatBytes(20 * MB)).toBe('20 MB')
-    expect(formatBytes(ramBudgetBytes(false))).toBe('8 GB')
-    expect(formatBytes(ramBudgetBytes(true))).toBe('2 GB')
+    expect(formatBytes(ramPolicy(false, undefined).maxBytes)).toBe('8 GB')
+    expect(formatBytes(ramPolicy(false, undefined).targetBytes)).toBe('2 GB')
   })
 })

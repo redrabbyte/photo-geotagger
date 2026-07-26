@@ -2,12 +2,14 @@ import { useMemo } from 'react'
 import type { PhotoKind } from '../domain/types'
 import { LIMIT_RANGES, defaultLimits, useStore } from '../state/store'
 import {
+  deviceMemoryGb,
   estimatePeakRam,
   fitLimits,
   formatBytes,
   limitCeilings,
   logicalCores,
-  ramBudgetBytes,
+  offeredLimit,
+  ramPolicy,
   type RamEstimate,
   type WriteLimits,
 } from '../services/ramEstimate'
@@ -20,8 +22,6 @@ function LimitChoices({
   min,
   max,
   auto,
-  ceiling,
-  cores,
   estimateFor,
   onPick,
   disabled,
@@ -30,8 +30,6 @@ function LimitChoices({
   min: number
   max: number
   auto: number
-  ceiling: number
-  cores: number
   estimateFor: (candidate: number) => string | undefined
   onPick: (value: number) => void
   disabled?: boolean
@@ -41,20 +39,13 @@ function LimitChoices({
     <div className="limit-choices">
       {values.map((v) => {
         const cost = estimateFor(v)
-        const overCores = v > ceiling
         return (
           <button
             key={v}
-            className={`limit-choice${v === value ? ' selected' : ''}${overCores ? ' over-cores' : ''}`}
+            className={`limit-choice${v === value ? ' selected' : ''}`}
             onClick={() => onPick(v)}
             disabled={disabled}
-            title={
-              overCores
-                ? `More than the ${cores} logical core${cores === 1 ? '' : 's'} on this device — costs memory without adding speed`
-                : v === auto
-                  ? 'What the app picks by itself for this device and the loaded files'
-                  : undefined
-            }
+            title={v === auto ? 'What the app picks by itself for this device and the loaded files' : undefined}
           >
             <span className="limit-value">
               {v}
@@ -101,8 +92,9 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
   const scanning = useStore((s) => s.scanning)
   const writing = useStore((s) => s.writeProgress) !== undefined
   const cores = useMemo(() => logicalCores(), [])
+  const memGb = useMemo(() => deviceMemoryGb(), [])
   const ceilings = useMemo(() => limitCeilings(), [])
-  const budget = useMemo(() => ramBudgetBytes(), [])
+  const policy = useMemo(() => ramPolicy(), [])
 
   // Only files that would actually be written matter for the peak. Sizes arrive
   // with each photo's metadata scan, so an import in progress has fewer of them
@@ -126,13 +118,29 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
     () =>
       fitLimits({
         ...forFiles,
-        budgetBytes: budget,
+        budgetBytes: policy.targetBytes,
         ceilings,
         workersWhenIdle: defaultLimits().exiftoolWorkers,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [files, settings.writeMode, settings.fastRaw, settings.fastMp4, budget, ceilings]
+    [files, settings.writeMode, settings.fastRaw, settings.fastMp4, policy, ceilings]
   )
+
+  // Values are offered up to the core count, and only while their estimate stays
+  // inside the memory ceiling — a setting that would plan for more than the
+  // device has is not a choice worth presenting.
+  const offered = (knob: keyof WriteLimits) =>
+    offeredLimit(knob, {
+      ...forFiles,
+      limits: settings.limits,
+      maxBytes: policy.maxBytes,
+      // A worker can only be busy while a file is in flight, so offering more
+      // of them than files-at-once would only ever be idle memory.
+      ceilings: {
+        ...ceilings,
+        exiftoolWorkers: Math.min(ceilings.exiftoolWorkers, settings.limits.writeConcurrency),
+      },
+    })
 
   const setLimits = (patch: Partial<WriteLimits>) => {
     // Picking a value by hand switches the automatic fitting off — it must not
@@ -161,8 +169,10 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
         rough estimates for the {measured === all.length ? files.length : `${files.length} of ${all.length}`}{' '}
         file{files.length === 1 ? '' : 's'} loaded
         {haveFiles && ` (largest ${formatBytes(largest)})`} — enough to compare settings, not exact.
-        ★ marks what the app picks by itself, the widest setting that stays under{' '}
-        {formatBytes(budget)} on this device.
+        ★ marks what the app picks by itself: the widest setting whose estimate stays under{' '}
+        {formatBytes(policy.targetBytes)}. Values are offered up to this device's {cores} logical
+        core{cores === 1 ? '' : 's'} and up to a peak of {formatBytes(policy.maxBytes)}
+        {memGb !== undefined && ` (the ${memGb} GB this device reports)`}.
       </p>
 
       <div className="limit-row">
@@ -177,10 +187,8 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
         <LimitChoices
           value={settings.limits.writeConcurrency}
           min={LIMIT_RANGES.writeConcurrency.min}
-          max={LIMIT_RANGES.writeConcurrency.max}
+          max={offered('writeConcurrency')}
           auto={auto.writeConcurrency}
-          ceiling={ceilings.writeConcurrency}
-          cores={cores}
           estimateFor={(v) => costLabel({ ...settings.limits, writeConcurrency: v })}
           onPick={(v) => setLimits({ writeConcurrency: v })}
           disabled={writing}
@@ -198,10 +206,8 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
         <LimitChoices
           value={settings.limits.exiftoolWorkers}
           min={LIMIT_RANGES.exiftoolWorkers.min}
-          max={LIMIT_RANGES.exiftoolWorkers.max}
+          max={offered('exiftoolWorkers')}
           auto={auto.exiftoolWorkers}
-          ceiling={ceilings.exiftoolWorkers}
-          cores={cores}
           estimateFor={(v) => costLabel({ ...settings.limits, exiftoolWorkers: v })}
           onPick={(v) => setLimits({ exiftoolWorkers: v })}
           disabled={writing}
@@ -237,7 +243,7 @@ export function LimitsDialog({ onClose }: { onClose: () => void }) {
       <div className="modal-actions">
         <button
           disabled={writing || atAuto}
-          title={`Let the app choose: the widest limits whose estimated peak stays under ${formatBytes(budget)}, capped at this device's ${cores} logical core${cores === 1 ? '' : 's'}`}
+          title={`Let the app choose: the widest limits whose estimated peak stays under ${formatBytes(policy.targetBytes)}, capped at this device's ${cores} logical core${cores === 1 ? '' : 's'}`}
           onClick={() =>
             useStore.getState().setSettings({ limitsAuto: true, limits: haveFiles ? auto : defaultLimits() })
           }

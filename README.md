@@ -145,11 +145,14 @@ the file's modified time (flagged in the inspector).
   trips dominate their cost).
 - Write parallelism (files in flight, ExifTool workers) is fitted
   automatically: modest defaults while an import is still loading — sizes
-  arrive per scanned file, so the memory estimate only grows — then the
-  widest setting whose estimated peak stays under the device's budget
-  (2 GB on phones, 8 GB otherwise), never exceeding the logical core count.
-  The ⚙ Limits dialog shows each value's estimated peak for the loaded files,
-  marks the automatic choice, and switches to manual as soon as one is picked.
+  arrive per scanned file, so the memory estimate only grows — then the widest
+  setting whose estimated peak stays under a comfortable target (1 GB on
+  phones, 2 GB otherwise). The ⚙ Limits dialog offers values up to a peak of
+  2 GB / 8 GB for anyone who wants to trade memory for speed; both figures
+  come down to what `navigator.deviceMemory` reports, and neither knob is ever
+  offered beyond the logical core count. It shows each value's estimated peak
+  for the loaded files, marks the automatic choice, and switches to manual as
+  soon as one is picked.
 - Videos: capture date and GPS are parsed from the container with tiny
   sliced reads (Sony XML uuid box, `mvhd`, `©xyz`/`Keys`); the ExifTool
   inspector feeds on a metadata-only copy (all boxes except `mdat`), so file

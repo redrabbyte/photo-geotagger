@@ -891,10 +891,6 @@ select {
   opacity: 0.7;
   white-space: nowrap;
 }
-/* Selectable, but more parallel work than the device has cores for. */
-.limit-choice.over-cores:not(.selected) {
-  opacity: 0.45;
-}
 .limits-updating {
   display: flex;
   align-items: center;

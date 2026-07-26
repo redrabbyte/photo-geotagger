@@ -22,7 +22,7 @@ import {
   writeInteropBatch,
   writeTimeBatch,
 } from './writePipeline'
-import { defaultLimits, fitLimits, limitCeilings, ramBudgetBytes } from './ramEstimate'
+import { defaultLimits, fitLimits, limitCeilings, ramPolicy } from './ramEstimate'
 import {
   useStore,
   nextSourceId,
@@ -78,7 +78,7 @@ export function autoTuneLimits(): void {
     mode: settings.writeMode,
     fastRaw: settings.fastRaw,
     fastMp4: settings.fastMp4,
-    budgetBytes: ramBudgetBytes(),
+    budgetBytes: ramPolicy().targetBytes,
     ceilings: limitCeilings(),
     workersWhenIdle: defaultLimits().exiftoolWorkers,
   })
