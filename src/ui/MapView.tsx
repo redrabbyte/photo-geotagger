@@ -3,7 +3,7 @@ import type { FeatureCollection, Feature } from 'geojson'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { GeoPoint, Track } from '../domain/types'
-import { displayPosition, gpsStatus } from '../domain/types'
+import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
 import { projectOntoTrack } from '../domain/projectOntoTrack'
 import { projectOntoDraft, type TrackDraft } from '../domain/trackDraft'
 import { useStore } from '../state/store'
@@ -301,9 +301,8 @@ export function MapView() {
             const photo = stateRef.current.photos[dragging.id]
             const source = photo && stateRef.current.sources[photo.sourceId]
             let deltaText = ''
-            if (photo?.meta && source) {
-              const tz = photo.meta.tzOffsetMin ?? source.assumedTzOffsetMin
-              const eff = photo.meta.captureLocalMs - tz * 60_000 + source.clockOffsetMs
+            const eff = photo && source ? effectiveUtcMs(photo, source) : undefined
+            if (eff !== undefined) {
               deltaText = `<br/>photo Δ ${formatDeltaMs(eff - proj.t)}`
             }
             popupHtml = `track time ${formatUtc(proj.t)}${deltaText}`

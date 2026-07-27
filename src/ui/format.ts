@@ -3,6 +3,22 @@ export function formatUtc(ms: number | undefined): string {
   return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
 }
 
+/**
+ * "2026-07-04 16:30:00" from a wall-clock value whose UTC fields ARE the clock.
+ * No zone suffix — the caller states the zone separately.
+ */
+export function formatWallClock(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms)) return '—'
+  return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '')
+}
+
+/** "(UTC+02:00)" / "(UTC)" — or the honest answer when no zone is stated. */
+export function formatTzLabel(tzOffsetMin: number | undefined): string {
+  if (tzOffsetMin === undefined) return '(no timezone in file — read as UTC)'
+  if (tzOffsetMin === 0) return '(UTC)'
+  return `(UTC${formatOffset(tzOffsetMin * 60_000).slice(0, 6)})`
+}
+
 /** Epoch ms → value for <input type="datetime-local" step="1"> (shown as UTC). */
 export function toUtcInput(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19)

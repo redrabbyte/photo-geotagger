@@ -5,7 +5,8 @@ export interface PersistedSource {
   name: string
   color: string
   clockOffsetMs: number
-  assumedTzOffsetMin: number
+  /** Source timezone label, when one was set. */
+  tzOffsetMin?: number
   dirHandle: FileSystemDirectoryHandle
 }
 

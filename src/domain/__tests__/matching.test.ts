@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Photo, Source, Track } from '../types'
-import { effectiveUtcMs, gpsStatus } from '../types'
+import { effectiveUtcMs, gpsStatus, localCapture } from '../types'
 import { findNeighbors } from '../trackIndex'
 import {
   matchToTracks,
@@ -36,7 +36,7 @@ function makeTrack(overrides: Partial<Track> = {}): Track {
 }
 
 function makeSource(overrides: Partial<Source> = {}): Source {
-  return { id: 's1', name: 'Camera', color: '#00f', clockOffsetMs: 0, assumedTzOffsetMin: 0, ...overrides }
+  return { id: 's1', name: 'Camera', color: '#00f', clockOffsetMs: 0, ...overrides }
 }
 
 function makePhoto(captureUtc: number, overrides: Partial<Photo> = {}): Photo {
@@ -57,34 +57,92 @@ function makePhoto(captureUtc: number, overrides: Partial<Photo> = {}): Photo {
 
 describe('effectiveUtcMs', () => {
   it('applies EXIF tz offset when present', () => {
-    const src = makeSource({ assumedTzOffsetMin: 0 })
+    const src = makeSource()
     const p = makePhoto(T0)
     p.meta!.tzOffsetMin = 120 // capture time is UTC+2 wall clock
     expect(effectiveUtcMs(p, src)).toBe(T0 - 120 * MIN)
   })
 
-  it('falls back to source assumed tz and applies clock offset', () => {
-    const src = makeSource({ assumedTzOffsetMin: 60, clockOffsetMs: 5000 })
+  it('reads a wall clock with no stated zone as UTC, then applies the clock offset', () => {
+    // Nothing is assumed on the file's behalf: an instant that is genuinely
+    // wrong is corrected with the clock offset, not by guessing a zone.
+    const src = makeSource({ clockOffsetMs: 5000 })
     const p = makePhoto(T0)
-    expect(effectiveUtcMs(p, src)).toBe(T0 - 60 * MIN + 5000)
+    expect(effectiveUtcMs(p, src)).toBe(T0 + 5000)
+  })
+
+  it('is not moved by the source timezone — that is a label, not an interpretation', () => {
+    const p = makePhoto(T0)
+    p.meta!.tzOffsetMin = 120
+    const plain = effectiveUtcMs(p, makeSource())
+    for (const tzOffsetMin of [-660, -120, 0, 60, 330, 840]) {
+      expect(effectiveUtcMs(p, makeSource({ tzOffsetMin }))).toBe(plain)
+    }
+    // Same for a file that states no zone of its own.
+    const bare = makePhoto(T0)
+    expect(effectiveUtcMs(bare, makeSource({ tzOffsetMin: 540 }))).toBe(effectiveUtcMs(bare, makeSource()))
+  })
+
+  it('keeps photos in the same order whatever timezone the source is given', () => {
+    const photos = [T0 + 3 * MIN, T0, T0 + 90 * MIN].map((t) => makePhoto(t))
+    photos[1].meta!.tzOffsetMin = 120 // a mixed bag: one file states a zone
+    const order = (tzOffsetMin?: number) => {
+      const src = makeSource({ tzOffsetMin })
+      return [...photos]
+        .sort((a, b) => effectiveUtcMs(a, src)! - effectiveUtcMs(b, src)!)
+        .map((p) => p.id)
+    }
+    expect(order(600)).toEqual(order(undefined))
+    expect(order(-480)).toEqual(order(undefined))
   })
 
   it('sidecar time outranks EXIF time and ignores the clock offset', () => {
-    const src = makeSource({ assumedTzOffsetMin: 60, clockOffsetMs: 5000 })
+    const src = makeSource({ clockOffsetMs: 5000 })
     const p = makePhoto(T0, { sidecarTime: { wallClockMs: T0 + 10 * MIN, tzOffsetMin: 120 } })
     expect(effectiveUtcMs(p, src)).toBe(T0 + 10 * MIN - 120 * MIN)
   })
 
-  it('sidecar time without offset uses the source assumed tz', () => {
-    const src = makeSource({ assumedTzOffsetMin: 60, clockOffsetMs: 5000 })
+  it('sidecar time without an offset is read as UTC', () => {
+    const src = makeSource({ tzOffsetMin: 60, clockOffsetMs: 5000 })
     const p = makePhoto(T0, { sidecarTime: { wallClockMs: T0 + 10 * MIN } })
-    expect(effectiveUtcMs(p, src)).toBe(T0 + 10 * MIN - 60 * MIN)
+    expect(effectiveUtcMs(p, src)).toBe(T0 + 10 * MIN)
   })
 
   it('sidecar time works even before the file itself was scanned', () => {
     const src = makeSource()
     const p = makePhoto(T0, { meta: undefined, sidecarTime: { wallClockMs: T0, tzOffsetMin: 0 } })
     expect(effectiveUtcMs(p, src)).toBe(T0)
+  })
+})
+
+describe('localCapture', () => {
+  it('re-expresses the same instant in the source timezone', () => {
+    const p = makePhoto(T0) // 12:00 wall clock, no zone in the file
+    const bare = localCapture(p, makeSource())
+    expect(bare).toEqual({ wallClockMs: T0, tzOffsetMin: undefined })
+
+    // Labelling the source UTC+2 moves the clock forward, not the instant.
+    const labelled = localCapture(p, makeSource({ tzOffsetMin: 120 }))!
+    expect(labelled.tzOffsetMin).toBe(120)
+    expect(labelled.wallClockMs).toBe(T0 + 120 * MIN)
+    expect(labelled.wallClockMs - labelled.tzOffsetMin! * MIN).toBe(effectiveUtcMs(p, makeSource())!)
+  })
+
+  it('keeps the file\'s own wall clock when nothing overrides it', () => {
+    const p = makePhoto(T0)
+    p.meta!.tzOffsetMin = 540 // 12:00 in UTC+9
+    expect(localCapture(p, makeSource())).toEqual({ wallClockMs: T0, tzOffsetMin: 540 })
+  })
+
+  it('a clock offset moves the instant, and the label follows it', () => {
+    const p = makePhoto(T0)
+    p.meta!.tzOffsetMin = 0
+    const local = localCapture(p, makeSource({ clockOffsetMs: 90 * MIN, tzOffsetMin: 0 }))!
+    expect(local.wallClockMs).toBe(T0 + 90 * MIN)
+  })
+
+  it('has nothing to say about a photo with no time at all', () => {
+    expect(localCapture(makePhoto(T0, { meta: undefined }), makeSource())).toBeUndefined()
   })
 })
 

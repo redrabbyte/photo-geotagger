@@ -28,8 +28,12 @@ export class Mp4StructureError extends Error {}
 export interface Mp4TimeEdit {
   /** True capture instant as epoch ms (mvhd stores UTC). */
   utcMs: number
-  /** Minutes east of UTC — Keys creationdate carries the local time. */
-  tzOffsetMin: number
+  /**
+   * Minutes east of UTC — Keys creationdate carries the local time. Undefined
+   * when nothing states a zone: mvhd still gets the UTC instant, but no local
+   * time is claimed.
+   */
+  tzOffsetMin?: number
 }
 
 export interface Mp4Edit {
@@ -86,7 +90,7 @@ export function formatIso6709(gps: GeoPoint): string {
 }
 
 /** "2026-07-04T12:30:00+0200" — local wall clock with offset (Apple style). */
-export function formatKeysCreationDate(time: Mp4TimeEdit): string {
+export function formatKeysCreationDate(time: Mp4TimeEdit & { tzOffsetMin: number }): string {
   const local = new Date(time.utcMs + time.tzOffsetMin * 60_000)
   const p = (n: number) => String(n).padStart(2, '0')
   const abs = Math.abs(time.tzOffsetMin)
@@ -332,7 +336,11 @@ export async function rewriteMp4Metadata(blob: Blob, edit: Mp4Edit): Promise<Mp4
 
   const keysValues = new Map<string, string>()
   if (edit.gps) keysValues.set(KEY_LOCATION, formatIso6709(edit.gps))
-  if (edit.time) keysValues.set(KEY_CREATIONDATE, formatKeysCreationDate(edit.time))
+  // Keys creationdate is a local time plus its offset — skip it entirely when
+  // no zone is known rather than pass off UTC as local.
+  if (edit.time?.tzOffsetMin !== undefined) {
+    keysValues.set(KEY_CREATIONDATE, formatKeysCreationDate({ ...edit.time, tzOffsetMin: edit.time.tzOffsetMin }))
+  }
 
   const append: Uint8Array[] = []
   const replaced = new Map<string, Uint8Array>()

@@ -186,12 +186,26 @@ export function SourcesPanel() {
               <span className="muted small">Clock</span>
               <OffsetEditor sourceId={s.id} value={s.clockOffsetMs} />
             </div>
-            <div className="source-row">
-              <span className="muted small" title="Timezone assumed for photos whose EXIF has no timezone offset">TZ</span>
+            <div
+              className="source-row"
+              title={
+                'Timezone these photos are shown and written in. It re-labels the times only: the ' +
+                'moment each photo was taken stays exactly the same, so the timeline order and the ' +
+                'track matching never move — the local time on screen (and in the file, once you ' +
+                'write it) does. Leave it on "as in file" to keep whatever each file states; use ' +
+                'the clock offset above if the times themselves are wrong.'
+              }
+            >
+              <span className="muted small">TZ</span>
               <select
-                value={s.assumedTzOffsetMin}
-                onChange={(e) => useStore.getState().updateSource(s.id, { assumedTzOffsetMin: parseInt(e.target.value, 10) })}
+                value={s.tzOffsetMin ?? ''}
+                onChange={(e) =>
+                  useStore.getState().updateSource(s.id, {
+                    tzOffsetMin: e.target.value === '' ? undefined : parseInt(e.target.value, 10),
+                  })
+                }
               >
+                <option value="">as in file</option>
                 {Array.from({ length: 27 }, (_, i) => (i - 12) * 60).map((min) => (
                   <option key={min} value={min}>
                     UTC{min === 0 ? '' : formatOffset(min * 60_000).slice(0, 6)}

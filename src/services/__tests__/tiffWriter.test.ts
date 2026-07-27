@@ -72,6 +72,28 @@ describe('rewriteTiffMetadata', () => {
     expect(new TextDecoder('latin1').decode(rewritten)).toContain('RAW-STRIP-DATA-DO-NOT-MOVE')
   })
 
+  it('writes the clock alone when no timezone is known', async () => {
+    const original = makeTiff()
+    const rewritten = rewriteTiffMetadata(asBuffer(original), {
+      time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0) },
+    })
+    // Purely in-place: no OffsetTime records were appended.
+    expect(rewritten.length).toBe(original.length)
+    const parsed = await exifr.parse(asBuffer(rewritten), { tiff: true, exif: true })
+    expect(parsed.OffsetTimeOriginal).toBeUndefined()
+    expect(new TextDecoder('latin1').decode(rewritten)).toContain('2026:07:04 15:00:00')
+  })
+
+  it('leaves an existing OffsetTime alone when the correction states no zone', () => {
+    const original = makeTiff({ offsetTime: true })
+    const rewritten = rewriteTiffMetadata(asBuffer(original), {
+      time: { wallClockMs: Date.UTC(2026, 6, 4, 15, 0, 0) },
+    })
+    // Cannot happen through timeCorrectionFor (a stated zone always comes back
+    // as the target), but the writer must not corrupt the tag if asked.
+    expect(new TextDecoder('latin1').decode(rewritten)).toContain('+09:00')
+  })
+
   it('patches existing OffsetTime tags without appending anything', () => {
     const original = makeTiff({ offsetTime: true })
     const rewritten = rewriteTiffMetadata(asBuffer(original), {

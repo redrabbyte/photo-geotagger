@@ -282,7 +282,7 @@ async function persistCurrentSources(): Promise<void> {
         name: s.name,
         color: s.color,
         clockOffsetMs: s.clockOffsetMs,
-        assumedTzOffsetMin: s.assumedTzOffsetMin,
+        tzOffsetMin: s.tzOffsetMin,
         dirHandle: s.dirHandle!,
       }))
   )
@@ -354,7 +354,6 @@ function makeSource(name: string, dirHandle?: FileSystemDirectoryHandle): Source
     name: name || `Source ${existing + 1}`,
     color: SOURCE_COLORS[existing % SOURCE_COLORS.length],
     clockOffsetMs: 0,
-    assumedTzOffsetMin: -new Date().getTimezoneOffset(),
     dirHandle,
   }
 }
@@ -528,7 +527,7 @@ export async function listRestorableSources(): Promise<RestorableSource[]> {
         name: p.name,
         color: p.color,
         clockOffsetMs: p.clockOffsetMs,
-        assumedTzOffsetMin: p.assumedTzOffsetMin,
+        tzOffsetMin: p.tzOffsetMin,
         dirHandle: p.dirHandle,
       }
       try {

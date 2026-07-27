@@ -18,10 +18,15 @@ export interface Source {
   /** Milliseconds ADDED to a photo's capture time to obtain true UTC. */
   clockOffsetMs: number
   /**
-   * Minutes east of UTC assumed for photos in this source whose EXIF has no
-   * OffsetTimeOriginal. Applied when converting wall-clock capture time to UTC.
+   * Minutes east of UTC this source's capture times are shown and written in —
+   * a label, not an interpretation. Setting it re-expresses the same instant in
+   * another zone: the wall clock moves, the moment the photo was taken does
+   * not, so nothing about ordering or track matching changes. `undefined`
+   * keeps whatever timezone each file itself states (usually the right thing);
+   * set it to stamp times as local-at-the-location on files whose clock ran in
+   * another zone. Use `clockOffsetMs` to correct the instant itself.
    */
-  assumedTzOffsetMin: number
+  tzOffsetMin?: number
   /** Live directory handle; not serializable, restored from IndexedDB. */
   dirHandle?: FileSystemDirectoryHandle
 }
@@ -154,18 +159,56 @@ export interface Track {
 
 export type GpsStatus = 'original' | 'assigned' | 'manual' | 'none'
 
+/**
+ * The instant a photo was taken, in UTC — the only time the app matches,
+ * sorts and draws by.
+ *
+ * A wall clock with no stated timezone is read as UTC. Nothing is assumed on
+ * its behalf: a camera whose clock ran in another zone is corrected with the
+ * source's `clockOffsetMs` (which map calibration sets for you), and the
+ * source's `tzOffsetMin` deliberately has no say here — changing a label must
+ * not move a photo in time.
+ */
 export function effectiveUtcMs(photo: Photo, source: Source): number | undefined {
   // A sidecar's DateTimeOriginal outranks the file's EXIF time (it is the
   // newer edit) and is treated as already corrected: no clock offset applied.
   if (photo.sidecarTime) {
-    const tz = photo.sidecarTime.tzOffsetMin ?? source.assumedTzOffsetMin
-    return photo.sidecarTime.wallClockMs - tz * 60_000
+    return photo.sidecarTime.wallClockMs - (photo.sidecarTime.tzOffsetMin ?? 0) * 60_000
   }
   if (!photo.meta) return undefined
-  const tz = photo.meta.tzOffsetMin ?? source.assumedTzOffsetMin
   // Once the corrected time is baked into the file, the offset is spent.
   const offset = photo.meta.timeCorrected ? 0 : source.clockOffsetMs
-  return photo.meta.captureLocalMs - tz * 60_000 + offset
+  return photo.meta.captureLocalMs - (photo.meta.tzOffsetMin ?? 0) * 60_000 + offset
+}
+
+/**
+ * Timezone this photo's capture time is shown and written in: the source's
+ * label when it has one, otherwise whatever the file itself states — which may
+ * be nothing at all.
+ */
+export function captureTzOffsetMin(photo: Photo, source: Source): number | undefined {
+  if (source.tzOffsetMin !== undefined) return source.tzOffsetMin
+  return photo.sidecarTime ? photo.sidecarTime.tzOffsetMin : photo.meta?.tzOffsetMin
+}
+
+export interface LocalCapture {
+  /** Wall clock in that timezone, as epoch ms whose UTC fields are the clock. */
+  wallClockMs: number
+  /** Minutes east of UTC, or undefined when nothing states one. */
+  tzOffsetMin?: number
+}
+
+/**
+ * The same instant expressed in the timezone the photo should be labelled with —
+ * what the details panel shows and what a time write puts into the file. Since
+ * it is derived from the UTC instant, a different label moves the wall clock and
+ * nothing else.
+ */
+export function localCapture(photo: Photo, source: Source): LocalCapture | undefined {
+  const utc = effectiveUtcMs(photo, source)
+  if (utc === undefined) return undefined
+  const tzOffsetMin = captureTzOffsetMin(photo, source)
+  return { wallClockMs: utc + (tzOffsetMin ?? 0) * 60_000, tzOffsetMin }
 }
 
 export function gpsStatus(photo: Photo): GpsStatus {

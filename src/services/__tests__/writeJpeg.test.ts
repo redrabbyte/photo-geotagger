@@ -104,6 +104,18 @@ describe('insertGpsIntoJpeg', () => {
     ).resolves.toBeUndefined()
   })
 
+  it('writes the clock without an OffsetTime tag when no zone is known', async () => {
+    // The source states no timezone and neither does the file: correcting the
+    // clock must not stamp an invented zone alongside it.
+    const jpeg = makeJpegWithExif(DTO)
+    const out = insertTimeIntoJpeg(jpeg, { wallClockMs: Date.parse('2026-06-01T13:34:56Z') })
+    const buf = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
+    const parsed = await exifr.parse(buf, { exif: true })
+    expect((parsed.DateTimeOriginal as Date).getHours()).toBe(13)
+    expect(parsed.OffsetTimeOriginal).toBeUndefined()
+    expect(parsed.OffsetTimeDigitized).toBeUndefined()
+  })
+
   it('formats EXIF datetime and tz offsets', () => {
     expect(formatExifDateTime(Date.parse('2026-06-01T09:05:07Z'))).toBe('2026:06:01 09:05:07')
     expect(formatTzOffset(120)).toBe('+02:00')

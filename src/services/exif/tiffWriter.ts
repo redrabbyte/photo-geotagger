@@ -342,11 +342,15 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
     const digitized = exifIfd.entries.find((e) => e.tag === TAG_DATETIME_DIGITIZED)
     if (digitized) apply(asciiPatch(tiff, digitized, dateTime))
 
-    const tz = formatTzOffset(edit.time.tzOffsetMin)
-    for (const tag of [TAG_OFFSET_TIME_ORIGINAL, TAG_OFFSET_TIME_DIGITIZED]) {
-      const existing = exifIfd.entries.find((e) => e.tag === tag)
-      if (existing) apply(asciiPatch(tiff, existing, tz))
-      else addOffsetTags.push(tag)
+    // With no timezone stated anywhere, write the clock only — an invented
+    // zone would silently move the instant for whoever reads the file next.
+    if (edit.time.tzOffsetMin !== undefined) {
+      const tz = formatTzOffset(edit.time.tzOffsetMin)
+      for (const tag of [TAG_OFFSET_TIME_ORIGINAL, TAG_OFFSET_TIME_DIGITIZED]) {
+        const existing = exifIfd.entries.find((e) => e.tag === tag)
+        if (existing) apply(asciiPatch(tiff, existing, tz))
+        else addOffsetTags.push(tag)
+      }
     }
   }
   if (edit.dropInterop) {
@@ -389,7 +393,7 @@ export function rewriteTiffMetadata(original: ArrayBuffer, edit: TiffEdit): Uint
   }
 
   if (needsOffsetTags) {
-    const tz = ascii(`${formatTzOffset(edit.time!.tzOffsetMin)}\0`)
+    const tz = ascii(`${formatTzOffset(edit.time!.tzOffsetMin!)}\0`)
     const record = (tag: number, valueAt: number) => ({
       tag,
       bytes: b.entry(tag, T_ASCII, tz.length, b.u32(valueAt)),

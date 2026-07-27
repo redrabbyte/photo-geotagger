@@ -3,13 +3,13 @@ import { exiftoolInspect } from '../services/writePipeline'
 import { readFileBytes } from '../services/fs/safeWrite'
 import { metadataOnlyCopy } from '../services/exif/videoMeta'
 import type { AssignmentMethod } from '../domain/types'
-import { displayPosition, effectiveUtcMs, gpsStatus } from '../domain/types'
+import { displayPosition, effectiveUtcMs, gpsStatus, localCapture } from '../domain/types'
 import { findNeighbors } from '../domain/trackIndex'
 import { useEffect } from 'react'
 import { useStore } from '../state/store'
 import { ensureMeta, ensureThumbs } from '../services/appActions'
 import { TrackEditorPanel } from './TrackEditorPanel'
-import { formatCoord, formatDeltaMs, formatUtc } from './format'
+import { formatCoord, formatDeltaMs, formatTzLabel, formatUtc, formatWallClock } from './format'
 import { orientBlob } from '../services/exif/orient'
 import { embeddedPreview } from '../services/exif/preview'
 import { captureVideoFrame } from '../services/videoThumb'
@@ -150,6 +150,10 @@ export function Inspector() {
 
   const pos = active ? displayPosition(active) : undefined
   const effT = active && activeSource ? effectiveUtcMs(active, activeSource) : undefined
+  // Local time is the instant re-expressed in the photo's timezone: the source's
+  // label when it has one, else whatever the file states.
+  const local = active && activeSource ? localCapture(active, activeSource) : undefined
+  const tzFromSource = activeSource?.tzOffsetMin !== undefined
 
   return (
     <div className="inspector">
@@ -169,8 +173,21 @@ export function Inspector() {
               <tr>
                 <td>Time</td>
                 <td>
-                  {formatUtc(effT)}
+                  {formatWallClock(local?.wallClockMs)}{' '}
+                  <span className="muted">{formatTzLabel(local?.tzOffsetMin)}</span>
+                  {tzFromSource && (
+                    <span className="muted" title="From this source's timezone setting, not from the file">
+                      {' '}
+                      · source
+                    </span>
+                  )}
                   {active.meta?.timeSource === 'file' && <span className="warn"> (file date — no EXIF time!)</span>}
+                </td>
+              </tr>
+              <tr>
+                <td>UTC</td>
+                <td className="muted" title="The instant used for matching, sorting and the timeline">
+                  {formatUtc(effT)}
                 </td>
               </tr>
               <tr><td>Status</td><td><span className={`dot dot-${gpsStatus(active)}`} /> {gpsStatus(active)}{active.assignment ? ` (${active.assignment.method}${active.assignment.degraded ? ', degraded' : ''})` : ''}</td></tr>
@@ -283,9 +300,9 @@ export function Inspector() {
           <button
             title="Set this source's clock offset by clicking where this photo was actually taken on a track"
             onClick={() => {
-              const tz = active.meta!.tzOffsetMin ?? activeSource.assumedTzOffsetMin
-              const base = active.meta!.captureLocalMs - tz * 60_000
-              useStore.getState().startCalibrate(activeSource.id, base, active.fileName)
+              // Uncorrected instant: calibration derives the clock offset itself.
+              const base = effectiveUtcMs({ ...active, meta: active.meta }, { ...activeSource, clockOffsetMs: 0 })
+              if (base !== undefined) useStore.getState().startCalibrate(activeSource.id, base, active.fileName)
             }}
           >
             Calibrate clock from this photo…

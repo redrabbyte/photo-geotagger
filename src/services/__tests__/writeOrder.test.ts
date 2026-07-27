@@ -59,7 +59,7 @@ describe('video handling', () => {
         }
       },
     } as unknown as FileSystemDirectoryHandle
-    return { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, assumedTzOffsetMin: 0, dirHandle }
+    return { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, dirHandle }
   }
 
   function gaugedVideos(gauge: { active: number; max: number }): Photo[] {
@@ -120,7 +120,7 @@ describe('video handling', () => {
         written,
       }
     }
-    const source: Source = { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, assumedTzOffsetMin: 0 }
+    const source: Source = { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0 }
     const good = makeHandle(mp4)
     const bad = makeHandle(new Blob([new Uint8Array(5000)]))
     const photos = [
@@ -179,7 +179,7 @@ describe('video handling', () => {
         }
       },
     } as unknown as FileSystemFileHandle
-    const source: Source = { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0, assumedTzOffsetMin: 0 }
+    const source: Source = { id: 'src', name: 'cam', color: '#000', clockOffsetMs: 0 }
     const videos = ['v1', 'v2', 'v3'].map((id) => ({ ...makePhoto(id, 'video'), sourceId: 'src', fileHandle }))
     const results = await writeBatch(
       videos,

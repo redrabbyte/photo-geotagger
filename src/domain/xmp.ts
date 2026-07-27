@@ -27,21 +27,23 @@ function isoNow(now: Date): string {
 }
 
 /** ISO 8601 with explicit offset, e.g. "2026-06-01T12:34:56+02:00". */
-export function xmpDateTime(wallClockMs: number, tzOffsetMin: number): string {
+export function xmpDateTime(wallClockMs: number, tzOffsetMin?: number): string {
   const d = new Date(wallClockMs)
   const p = (n: number) => String(n).padStart(2, '0')
+  const stamp =
+    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` +
+    `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  // A zone-less XMP timestamp is valid and honest; readTimeFromXmp reads both.
+  if (tzOffsetMin === undefined) return stamp
   const sign = tzOffsetMin < 0 ? '-' : '+'
   const abs = Math.abs(tzOffsetMin)
-  return (
-    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}` +
-    `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}` +
-    `${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
-  )
+  return `${stamp}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
 }
 
 export interface SidecarTimeCorrection {
   wallClockMs: number
-  tzOffsetMin: number
+  /** Minutes east of UTC; omitted when nothing states a zone. */
+  tzOffsetMin?: number
 }
 
 /** Generate a fresh XMP sidecar with GPS and/or corrected time + ModifyDate. */

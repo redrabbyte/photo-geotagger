@@ -1,5 +1,6 @@
 import exifr from 'exifr'
 import type { GeoPoint, Photo, Source } from '../domain/types'
+import { localCapture } from '../domain/types'
 import { generateXmpSidecar, mergeGpsIntoXmp, sidecarNameFor } from '../domain/xmp'
 import {
   formatExifDateTime,
@@ -75,22 +76,25 @@ export function directoryOfCached(
 }
 
 /**
- * Compute the capture-time correction for a photo, or undefined when there is
- * nothing to correct: no EXIF time, already corrected, or the source clock is
- * right and the file already carries a timezone.
+ * What this photo's capture time should read as, when that differs from what
+ * the file stores — otherwise undefined, meaning there is nothing to write.
+ *
+ * Both knobs land here: a clock offset moves the instant, a source timezone
+ * re-labels it. Comparing the target against the stored values makes the
+ * operation idempotent — a written file matches its own target, so the same
+ * photo is never offered twice.
  */
 export function timeCorrectionFor(photo: Photo, source: Source): TimeCorrection | undefined {
   const meta = photo.meta
   // A sidecar time means the correction already lives next to the file.
   if (photo.sidecarTime) return undefined
-  if (!meta || meta.timeSource !== 'exif' || meta.timeCorrected) return undefined
-  const needsShift = source.clockOffsetMs !== 0
-  const needsTz = meta.tzOffsetMin === undefined
-  if (!needsShift && !needsTz) return undefined
-  return {
-    wallClockMs: meta.captureLocalMs + source.clockOffsetMs,
-    tzOffsetMin: meta.tzOffsetMin ?? source.assumedTzOffsetMin,
-  }
+  if (!meta || meta.timeSource !== 'exif') return undefined
+  const target = localCapture(photo, source)
+  if (!target) return undefined
+  // Sub-second differences are noise (EXIF stores whole seconds), not work.
+  const sameClock = Math.abs(target.wallClockMs - meta.captureLocalMs) < 1000
+  if (sameClock && target.tzOffsetMin === meta.tzOffsetMin) return undefined
+  return target
 }
 
 /** Lazy pool of ExifTool workers; each loads the 25 MB WASM on first use. */
@@ -218,9 +222,10 @@ async function exiftoolWriteGps(
   const timeCorrection = time
     ? {
         exifDateTime: formatExifDateTime(time.wallClockMs),
-        tzOffset: formatTzOffset(time.tzOffsetMin),
-        // QuickTime dates are UTC — same instant, minus the timezone.
-        utcDateTime: formatExifDateTime(time.wallClockMs - time.tzOffsetMin * 60_000),
+        // No zone known: the wall clock goes in without an OffsetTime tag, and
+        // it is the best UTC we have for the QuickTime dates.
+        tzOffset: time.tzOffsetMin === undefined ? undefined : formatTzOffset(time.tzOffsetMin),
+        utcDateTime: formatExifDateTime(time.wallClockMs - (time.tzOffsetMin ?? 0) * 60_000),
       }
     : undefined
   const result = await exiftoolRequest(
@@ -413,7 +418,7 @@ async function tryWriteVideoFast(
     rewrite = await rewriteMp4Metadata(file, {
       gps,
       time: time
-        ? { utcMs: time.wallClockMs - time.tzOffsetMin * 60_000, tzOffsetMin: time.tzOffsetMin }
+        ? { utcMs: time.wallClockMs - (time.tzOffsetMin ?? 0) * 60_000, tzOffsetMin: time.tzOffsetMin }
         : undefined,
     })
   } catch (err) {
@@ -475,7 +480,10 @@ async function tryWriteRawFast(
       return false
     }
   }
-  if (time && Math.abs(meta.captureLocalMs - time.wallClockMs) > 1000) return false
+  if (time) {
+    if (Math.abs(meta.captureLocalMs - time.wallClockMs) > 1000) return false
+    if (time.tzOffsetMin !== undefined && meta.tzOffsetMin !== time.tzOffsetMin) return false
+  }
   await backupThenWrite(photo, source, rewritten, backup, dirs)
   return true
 }

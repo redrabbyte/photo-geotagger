@@ -24,7 +24,7 @@ const source: Source = {
   name: 'Cam',
   color: '#00f',
   clockOffsetMs: 0,
-  assumedTzOffsetMin: 0,
+  
 }
 
 function photoAt(t: number, lat: number): Photo {

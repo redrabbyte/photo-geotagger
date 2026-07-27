@@ -38,8 +38,12 @@ const OFFSET_TIME_DIGITIZED = 36882
 export interface TimeCorrection {
   /** Corrected wall-clock capture time as epoch ms (interpreted as UTC fields). */
   wallClockMs: number
-  /** Timezone the wall clock is in, minutes east of UTC. */
-  tzOffsetMin: number
+  /**
+   * Timezone the wall clock is in, minutes east of UTC. Undefined when nothing
+   * states one — the wall clock is then written without an OffsetTime tag
+   * rather than with an invented zone.
+   */
+  tzOffsetMin?: number
 }
 
 /** "YYYY:MM:DD HH:MM:SS" from a wall-clock-as-UTC millisecond value. */
@@ -61,11 +65,13 @@ export function formatTzOffset(min: number): string {
 function applyTimeTags(exifObj: ReturnType<typeof piexif.load>, time: TimeCorrection): void {
   const exifIfd: Record<number, unknown> = exifObj['Exif'] ?? {}
   const dateTime = formatExifDateTime(time.wallClockMs)
-  const tz = formatTzOffset(time.tzOffsetMin)
   exifIfd[piexif.ExifIFD.DateTimeOriginal] = dateTime
   exifIfd[piexif.ExifIFD.DateTimeDigitized] = dateTime
-  exifIfd[OFFSET_TIME_ORIGINAL] = tz
-  exifIfd[OFFSET_TIME_DIGITIZED] = tz
+  if (time.tzOffsetMin !== undefined) {
+    const tz = formatTzOffset(time.tzOffsetMin)
+    exifIfd[OFFSET_TIME_ORIGINAL] = tz
+    exifIfd[OFFSET_TIME_DIGITIZED] = tz
+  }
   exifObj['Exif'] = exifIfd
 }
 

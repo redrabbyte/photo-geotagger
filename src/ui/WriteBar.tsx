@@ -122,7 +122,7 @@ export function WriteBar() {
 
       <label
         className="checkbox-row"
-        title="Also write the corrected capture time into the files: DateTimeOriginal shifted by the source's clock offset, plus the timezone (OffsetTimeOriginal). Only touches files whose source has a correction or that lack a timezone."
+        title="Also write the corrected capture time into the files: DateTimeOriginal shifted by the source's clock offset, and re-labelled into the source's timezone when one is set (OffsetTimeOriginal). Only touches files whose stored time differs from that."
       >
         <input
           type="checkbox"
@@ -205,8 +205,8 @@ export function WriteBar() {
             <button
               title={
                 hasSelection
-                  ? 'Write ONLY the corrected capture time (clock offset + timezone) into the SELECTED files that need it. Clear the selection to target every file.'
-                  : 'Write ONLY the corrected capture time (clock offset + timezone) into every file that needs it — also files without a GPS position. GPS assignments are not written by this button.'
+                  ? "Write ONLY the capture time (the source's clock offset, and its timezone label when set) into the SELECTED files that need it. Clear the selection to target every file."
+                  : "Write ONLY the capture time (the source's clock offset, and its timezone label when set) into every file whose stored time differs — also files without a GPS position. GPS assignments are not written by this button."
               }
               onClick={() => startWrite('time')}
             >

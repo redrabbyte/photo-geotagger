@@ -125,7 +125,7 @@ export interface AppState {
 
   addSource(source: Source, photos: Photo[]): void
   removeSource(id: SourceId): void
-  updateSource(id: SourceId, patch: Partial<Pick<Source, 'name' | 'clockOffsetMs' | 'assumedTzOffsetMin' | 'color'>>): void
+  updateSource(id: SourceId, patch: Partial<Pick<Source, 'name' | 'clockOffsetMs' | 'tzOffsetMin' | 'color'>>): void
   applyScanUpdates(updates: ScanUpdate[]): void
   /** Note thumbnail jobs as in flight (cleared when they deliver or fail). */
   markThumbsRequested(ids: string[]): void
@@ -150,14 +150,14 @@ export interface AppState {
     ok: boolean,
     target?: 'exif' | 'sidecar',
     error?: string,
-    timeCorrection?: { wallClockMs: number; tzOffsetMin: number }
+    timeCorrection?: { wallClockMs: number; tzOffsetMin?: number }
   ): void
   /** Result of a time-only write: updates meta, leaves GPS write state alone. */
   markTimeWriteResult(
     photoId: string,
     ok: boolean,
     error?: string,
-    timeCorrection?: { wallClockMs: number; tzOffsetMin: number },
+    timeCorrection?: { wallClockMs: number; tzOffsetMin?: number },
     target?: 'exif' | 'sidecar'
   ): void
   setWriteProgress(progress?: { done: number; total: number; current: string; etaMs?: number }): void

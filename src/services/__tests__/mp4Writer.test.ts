@@ -178,4 +178,14 @@ describe('rewriteMp4Metadata', () => {
     expect(meta.date?.wallClockMs).toBe(T_NEW)
     expect(new TextDecoder('latin1').decode(rewritten)).toContain('2026-07-04T17:00:00+0200')
   })
+
+  it('sets the UTC instant but claims no local time when no zone is known', async () => {
+    const original = concat(FTYP, box('mdat', new Uint8Array(100)), box('moov', mvhd(T_ORIG)))
+    const { parts } = await rewriteMp4Metadata(new Blob([original]), { time: { utcMs: T_NEW } })
+    const rewritten = await bytesOf(parts)
+    // mvhd is UTC by spec, so it is always correct to write; Keys creationdate
+    // is a local time plus offset and would be a guess.
+    expect((await readVideoMetadata(new Blob([rewritten]))).date?.wallClockMs).toBe(T_NEW)
+    expect(new TextDecoder('latin1').decode(rewritten)).not.toContain('creationdate')
+  })
 })

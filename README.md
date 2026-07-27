@@ -29,8 +29,13 @@ Tested in Chrome on Android and Windows. No guarantees else- (or any-) where :D
   (move points, trim, stretch or shift in time, append, reverse), build a
   track from your geotagged photos, and export everything as GPX.
 - **Fix wrong camera clocks** — set a per-source offset, or calibrate by
-  clicking where a photo was actually taken on the track. Corrected times
-  can optionally be written into the files along with the position.
+  clicking where a photo was actually taken on the track.
+- **Re-label timezones** — a source can be given a timezone, which re-expresses
+  its capture times in that zone: the moment each photo was taken stays
+  identical (nothing re-sorts, nothing re-matches), only the local time shown —
+  and written into the file — changes. Useful when the camera ran on home time
+  in another country. Corrected clocks and timezones can be written into the
+  files along with the position.
 - **Keep an overview** — a map with a place search, a zoomable timeline to
   select photos by time range, and a filmstrip with thumbnails and a filter
   for photos that still need a position. Each folder shows how far its
@@ -145,14 +150,21 @@ src/
 patches/      zeroperl's fd_write, fixed to grow geometrically (see below)
 ```
 
-Times are handled explicitly: EXIF capture times are wall-clock; each photo's
-UTC time = wall-clock − timezone (EXIF `OffsetTimeOriginal`, a sidecar's
-timezone, or the source's assumed timezone) + the source's clock offset. A
-sidecar's `DateTimeOriginal` and an in-file written correction count as
+Times are handled explicitly. EXIF capture times are wall-clock readings; a
+photo's UTC instant = wall clock − the timezone the file itself states (EXIF
+`OffsetTimeOriginal`, or a sidecar's) + the source's clock offset. A file that
+states no timezone is read as UTC: nothing is assumed on its behalf, and a
+camera whose clock ran in another zone is corrected with the clock offset (map
+calibration derives it for you). A source's timezone setting is a label rather
+than an interpretation — it re-expresses the same instant in another zone, so
+the displayed and written wall clock move while ordering and matching cannot.
+A sidecar's `DateTimeOriginal` and an in-file written correction count as
 already corrected (the offset is not applied twice). GPX and QuickTime times
-are UTC; Sony XAVC clips get their local time + timezone from the XML
-metadata (`CreationDateValue`). Photos with no metadata time fall back to
-the file's modified time (flagged in the inspector).
+are UTC; Sony XAVC clips get their local time + timezone from the XML metadata
+(`CreationDateValue`). Photos with no metadata time fall back to the file's
+modified time (flagged in the inspector). A time write states a timezone only
+when one is actually known — inventing one would move the instant for whoever
+reads the file next.
 
 ### Performance & robustness notes
 

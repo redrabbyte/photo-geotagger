@@ -7,7 +7,7 @@ const T0 = Date.parse('2026-06-01T10:00:00Z')
 const MIN = 60_000
 
 function makeSource(overrides: Partial<Source> = {}): Source {
-  return { id: 's1', name: 'Cam', color: '#00f', clockOffsetMs: 0, assumedTzOffsetMin: 0, ...overrides }
+  return { id: 's1', name: 'Cam', color: '#00f', clockOffsetMs: 0, ...overrides }
 }
 
 function makePhoto(id: string, t: number | undefined, overrides: Partial<Photo> = {}): Photo {
@@ -111,6 +111,17 @@ describe('assignSelected', () => {
     const q = useStore.getState().photos.q
     expect(q.writeError).toBeUndefined()
     expect(q.writeState).toBe('dirty')
+  })
+})
+
+describe('updateSource', () => {
+  it('sets and clears the source timezone label', () => {
+    useStore.setState({ sources: { s1: makeSource() }, photos: {} })
+    useStore.getState().updateSource('s1', { tzOffsetMin: 120 })
+    expect(useStore.getState().sources.s1.tzOffsetMin).toBe(120)
+    // Back to "as in file": each file's own zone takes over again.
+    useStore.getState().updateSource('s1', { tzOffsetMin: undefined })
+    expect(useStore.getState().sources.s1.tzOffsetMin).toBeUndefined()
   })
 })
 

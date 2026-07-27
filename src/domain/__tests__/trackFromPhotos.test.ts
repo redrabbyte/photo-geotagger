@@ -6,7 +6,7 @@ const T0 = Date.parse('2026-06-01T10:00:00Z')
 const MIN = 60_000
 
 const SOURCES: Record<string, Source> = {
-  s1: { id: 's1', name: 'Cam', color: '#00f', clockOffsetMs: 0, assumedTzOffsetMin: 0 },
+  s1: { id: 's1', name: 'Cam', color: '#00f', clockOffsetMs: 0 },
 }
 
 function makePhoto(

@@ -54,8 +54,8 @@ const runner = new ExiftoolRunner(wasmFetch)
 export interface WorkerTimeCorrection {
   /** Wall-clock "YYYY:MM:DD HH:MM:SS" (local time). */
   exifDateTime: string
-  /** "±HH:MM" */
-  tzOffset: string
+  /** "±HH:MM", or undefined when no timezone is known for this file. */
+  tzOffset?: string
   /** Same instant as UTC "YYYY:MM:DD HH:MM:SS" — QuickTime dates are UTC. */
   utcDateTime: string
 }
@@ -115,7 +115,11 @@ function tagsFor(
       // remains as provenance.
       tags['QuickTime:CreateDate'] = timeCorrection.utcDateTime
       tags['QuickTime:ModifyDate'] = timeCorrection.utcDateTime
-      tags['Keys:CreationDate'] = `${timeCorrection.exifDateTime}${timeCorrection.tzOffset}`
+      // Keys:CreationDate is a local time plus its offset — without a known
+      // zone there is no local time to state, so it is left out.
+      if (timeCorrection.tzOffset !== undefined) {
+        tags['Keys:CreationDate'] = `${timeCorrection.exifDateTime}${timeCorrection.tzOffset}`
+      }
     }
     return tags
   }
@@ -133,8 +137,10 @@ function tagsFor(
   if (timeCorrection) {
     tags.DateTimeOriginal = timeCorrection.exifDateTime
     tags.CreateDate = timeCorrection.exifDateTime
-    tags.OffsetTimeOriginal = timeCorrection.tzOffset
-    tags.OffsetTimeDigitized = timeCorrection.tzOffset
+    if (timeCorrection.tzOffset !== undefined) {
+      tags.OffsetTimeOriginal = timeCorrection.tzOffset
+      tags.OffsetTimeDigitized = timeCorrection.tzOffset
+    }
   }
   return tags
 }
